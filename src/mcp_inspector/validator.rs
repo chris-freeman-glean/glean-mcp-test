@@ -202,6 +202,7 @@ impl GleanMCPInspector {
         // Try to parse the response as JSON-RPC
         if let Ok(response_json) = serde_json::from_str::<serde_json::Value>(&stdout_content) {
             // Check if it's a successful JSON-RPC response
+            #[allow(clippy::option_if_let_else)]
             if let Some(result) = response_json.get("result") {
                 println!("✅ Tool call successful!");
                 println!("📄 Response received from {tool_name}");
@@ -363,12 +364,10 @@ impl GleanMCPInspector {
             // Try to extract tools from various possible response structures
             let tools = response_json.get("result").map_or_else(
                 || {
-                    if let Some(tools) = response_json.get("tools") {
-                        Some(tools)
-                    } else {
+                    response_json.get("tools").or_else(|| {
                         // If response itself is an array, use it as tools
                         response_json.as_array().map(|_| &response_json)
-                    }
+                    })
                 },
                 |result| result.get("tools"),
             );
@@ -634,6 +633,7 @@ impl GleanMCPInspector {
         }
 
         let success_count = tool_validation.values().filter(|&&v| v).count();
+        #[allow(clippy::cast_precision_loss)]
         let success_rate = success_count as f64 / expected_tools.len() as f64;
 
         if (success_rate - 1.0).abs() < f64::EPSILON {

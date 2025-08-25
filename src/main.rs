@@ -47,7 +47,7 @@ enum Commands {
 
     /// Test a specific MCP tool with a query
     TestTool {
-        /// Tool name (search, chat, read_document, etc.)
+        /// Tool name (search, chat, `read_document`, etc.)
         #[arg(short, long)]
         tool: String,
 
@@ -92,7 +92,7 @@ enum Commands {
         #[arg(short = 'H', long)]
         host: String,
 
-        /// Tool name (glean_search, chat, read_document, etc.)
+        /// Tool name (`glean_search`, chat, `read_document`, etc.)
         #[arg(short, long)]
         tool: String,
 
@@ -146,18 +146,19 @@ fn main() -> Result<()> {
     smol::block_on(async { handle_command(cli.command).await })
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn handle_command(command: Commands) -> Result<()> {
     match command {
         Commands::Inspect { instance, format } => {
             println!("🚀 Starting Glean MCP Inspector validation...");
-            println!("📋 Instance: {}", instance);
+            println!("📋 Instance: {instance}");
 
             match run_validation(Some(&instance)) {
                 Ok(result) => {
                     if format == "json" {
                         let json_output = serde_json::to_string_pretty(&result)
-                            .map_err(|e| GleanMcpError::Json(e))?;
-                        println!("{}", json_output);
+                            .map_err(GleanMcpError::Json)?;
+                        println!("{json_output}");
                     } else {
                         print_text_result(&result);
                     }
@@ -169,13 +170,13 @@ async fn handle_command(command: Commands) -> Result<()> {
                     } else {
                         println!("\n❌ Validation failed!");
                         if let Some(error) = &result.error {
-                            println!("Error: {}", error);
+                            println!("Error: {error}");
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to run MCP Inspector: {}", e);
+                    eprintln!("❌ Failed to run MCP Inspector: {e}");
                     std::process::exit(1);
                 }
             }
@@ -185,9 +186,9 @@ async fn handle_command(command: Commands) -> Result<()> {
             let config = GleanConfig::default();
             if verbose {
                 let config_yaml = serde_yaml::to_string(&config).map_err(|e| {
-                    GleanMcpError::Config(format!("Failed to serialize config: {}", e))
+                    GleanMcpError::Config(format!("Failed to serialize config: {e}"))
                 })?;
-                println!("📋 Current Configuration:\n{}", config_yaml);
+                println!("📋 Current Configuration:\n{config_yaml}");
             } else {
                 println!("📋 Glean Instance: {}", config.glean_instance.name);
                 println!("🔗 Server URL: {}", config.glean_instance.server_url);
@@ -206,24 +207,22 @@ async fn handle_command(command: Commands) -> Result<()> {
         Commands::Prerequisites => check_prerequisites(),
 
         Commands::Auth { instance } => {
-            println!("🔐 Testing authentication for Glean instance: {}", instance);
+            println!("🔐 Testing authentication for Glean instance: {instance}");
 
             // Check GLEAN_AUTH_TOKEN environment variable
             println!("\n🔍 Checking GLEAN_AUTH_TOKEN environment variable:");
-            let found_token = match std::env::var("GLEAN_AUTH_TOKEN") {
-                Ok(value) => {
-                    let masked = if value.len() > 8 {
-                        format!("{}...{}", &value[..4], &value[value.len() - 4..])
-                    } else {
-                        "***".to_string()
-                    };
-                    println!("  ✅ GLEAN_AUTH_TOKEN: {}", masked);
-                    true
-                }
-                Err(_) => {
-                    println!("  ❌ GLEAN_AUTH_TOKEN: not set");
-                    false
-                }
+            #[allow(clippy::option_if_let_else)]
+            let found_token = if let Ok(value) = std::env::var("GLEAN_AUTH_TOKEN") {
+                let masked = if value.len() > 8 {
+                    format!("{}...{}", &value[..4], &value[value.len() - 4..])
+                } else {
+                    "***".to_string()
+                };
+                println!("  ✅ GLEAN_AUTH_TOKEN: {masked}");
+                true
+            } else {
+                println!("  ❌ GLEAN_AUTH_TOKEN: not set");
+                false
             };
 
             if !found_token {
@@ -243,13 +242,13 @@ async fn handle_command(command: Commands) -> Result<()> {
                     } else {
                         println!("\n❌ Authentication test failed!");
                         if let Some(error) = &result.error {
-                            println!("Error: {}", error);
+                            println!("Error: {error}");
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("\n❌ Failed to run authentication test: {}", e);
+                    eprintln!("\n❌ Failed to run authentication test: {e}");
                     std::process::exit(1);
                 }
             }
@@ -263,8 +262,8 @@ async fn handle_command(command: Commands) -> Result<()> {
             instance,
             format,
         } => {
-            println!("🔧 Testing MCP tool: {} with query: \"{}\"", tool, query);
-            println!("📋 Instance: {}", instance);
+            println!("🔧 Testing MCP tool: {tool} with query: \"{query}\"");
+            println!("📋 Instance: {instance}");
 
             match run_tool_test(&tool, &query, Some(&instance), &format) {
                 Ok(result) => {
@@ -290,13 +289,13 @@ async fn handle_command(command: Commands) -> Result<()> {
                     } else {
                         println!("❌ Tool test failed!");
                         if let Some(error) = &result.error {
-                            println!("Error: {}", error);
+                            println!("Error: {error}");
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to run tool test: {}", e);
+                    eprintln!("❌ Failed to run tool test: {e}");
                     std::process::exit(1);
                 }
             }
@@ -304,7 +303,7 @@ async fn handle_command(command: Commands) -> Result<()> {
 
         Commands::ListTools { instance, format } => {
             println!("📋 Listing available tools from MCP server");
-            println!("📋 Instance: {}", instance);
+            println!("📋 Instance: {instance}");
 
             match run_list_tools(Some(&instance), &format) {
                 Ok(result) => {
@@ -322,20 +321,20 @@ async fn handle_command(command: Commands) -> Result<()> {
                     } else {
                         println!("❌ Failed to list tools!");
                         if let Some(error) = &result.error {
-                            println!("Error: {}", error);
+                            println!("Error: {error}");
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to list tools: {}", e);
+                    eprintln!("❌ Failed to list tools: {e}");
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::VerifyHost { host, format } => {
-            println!("🔍 Verifying MCP servers in host: {}", host);
+            println!("🔍 Verifying MCP servers in host: {host}");
 
             match run_host_operation(&host, "verify", "", None, None, &format).await {
                 Ok(result) => {
@@ -345,13 +344,13 @@ async fn handle_command(command: Commands) -> Result<()> {
                     } else {
                         println!("❌ Host verification failed!");
                         if let Some(error) = &result.error {
-                            println!("Error: {}", error);
+                            println!("Error: {error}");
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to verify host: {}", e);
+                    eprintln!("❌ Failed to verify host: {e}");
                     std::process::exit(1);
                 }
             }
@@ -364,8 +363,7 @@ async fn handle_command(command: Commands) -> Result<()> {
             format,
         } => {
             println!(
-                "🧪 Testing Glean tool '{}' on host '{}' with query: \"{}\"",
-                tool, host, query
+                "🧪 Testing Glean tool '{tool}' on host '{host}' with query: \"{query}\""
             );
 
             match run_host_operation(&host, "test_tool", "", Some(&tool), Some(&query), &format)
@@ -378,20 +376,20 @@ async fn handle_command(command: Commands) -> Result<()> {
                     } else {
                         println!("❌ Glean tool test failed!");
                         if let Some(error) = &result.error {
-                            println!("Error: {}", error);
+                            println!("Error: {error}");
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to test Glean tool on host: {}", e);
+                    eprintln!("❌ Failed to test Glean tool on host: {e}");
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::TestAllHostTools { host, format } => {
-            println!("🧪 Testing all Glean tools on host: {}", host);
+            println!("🧪 Testing all Glean tools on host: {host}");
 
             match run_host_operation(&host, "test_all", "", None, None, &format).await {
                 Ok(result) => {
@@ -401,40 +399,40 @@ async fn handle_command(command: Commands) -> Result<()> {
                     } else {
                         println!("❌ Some Glean tools failed!");
                         if let Some(error) = &result.error {
-                            println!("Error: {}", error);
+                            println!("Error: {error}");
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to test all Glean tools: {}", e);
+                    eprintln!("❌ Failed to test all Glean tools: {e}");
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::CheckHost { host, format } => {
-            println!("🔍 Checking if host application '{}' is available", host);
+            println!("🔍 Checking if host application '{host}' is available");
 
-            match check_host_availability(&host, &format).await {
+            match check_host_availability(&host, &format) {
                 Ok(available) => {
                     if available {
-                        println!("✅ Host '{}' is available and ready for testing", host);
+                        println!("✅ Host '{host}' is available and ready for testing");
                         std::process::exit(0);
                     } else {
-                        println!("❌ Host '{}' is not available", host);
+                        println!("❌ Host '{host}' is not available");
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to check host availability: {}", e);
+                    eprintln!("❌ Failed to check host availability: {e}");
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::ListHostServers { host, format } => {
-            println!("📋 Listing MCP servers in host: {}", host);
+            println!("📋 Listing MCP servers in host: {host}");
 
             match run_host_operation(&host, "list", "", None, None, &format).await {
                 Ok(result) => {
@@ -444,13 +442,13 @@ async fn handle_command(command: Commands) -> Result<()> {
                     } else {
                         println!("❌ Failed to list MCP servers!");
                         if let Some(error) = &result.error {
-                            println!("Error: {}", error);
+                            println!("Error: {error}");
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to list MCP servers: {}", e);
+                    eprintln!("❌ Failed to list MCP servers: {e}");
                     std::process::exit(1);
                 }
             }
@@ -473,12 +471,12 @@ fn print_text_result(result: &glean_mcp_test::InspectorResult) {
         println!("\n🔧 Tool Validation Results:");
         for (tool, success) in tool_results {
             let status = if *success { "✅" } else { "❌" };
-            println!("  {} {}", status, tool);
+            println!("  {status} {tool}");
         }
     }
 
     if let Some(error) = &result.error {
-        println!("\n⚠️  Error Details: {}", error);
+        println!("\n⚠️  Error Details: {error}");
     }
 }
 
@@ -486,27 +484,24 @@ fn check_prerequisites() -> Result<()> {
     println!("🔍 Checking system prerequisites...");
 
     // Check if npx is available
-    match std::process::Command::new("npx").arg("--version").output() {
-        Ok(output) => {
-            if output.status.success() {
-                let version = String::from_utf8_lossy(&output.stdout);
-                println!("✅ npx available: {}", version.trim());
-            } else {
-                println!("❌ npx command failed");
-                return Err(GleanMcpError::Config("npx not available".to_string()));
-            }
+    if let Ok(output) = std::process::Command::new("npx").arg("--version").output() {
+        if output.status.success() {
+            let version = String::from_utf8_lossy(&output.stdout);
+            println!("✅ npx available: {}", version.trim());
+        } else {
+            println!("❌ npx command failed");
+            return Err(GleanMcpError::Config("npx not available".to_string()));
         }
-        Err(_) => {
-            println!("❌ npx not found");
-            println!("Please install Node.js and npm to use MCP Inspector");
-            return Err(GleanMcpError::Config("npx not found".to_string()));
-        }
+    } else {
+        println!("❌ npx not found");
+        println!("Please install Node.js and npm to use MCP Inspector");
+        return Err(GleanMcpError::Config("npx not found".to_string()));
     }
 
     // Check if MCP Inspector package is available
     println!("🔍 Checking MCP Inspector availability...");
     match std::process::Command::new("npx")
-        .args(&["@modelcontextprotocol/inspector", "--help"])
+        .args(["@modelcontextprotocol/inspector", "--help"])
         .output()
     {
         Ok(output) => {
@@ -533,13 +528,12 @@ fn create_claude_code_controller(host: &str) -> Result<ClaudeCodeController> {
     match host {
         "claude-code" => Ok(ClaudeCodeController::new()),
         _ => Err(GleanMcpError::Host(format!(
-            "Unsupported host application: '{}'. Supported hosts: claude-code",
-            host
+            "Unsupported host application: '{host}'. Supported hosts: claude-code"
         ))),
     }
 }
 
-/// Run a host operation (configure, verify, test_tool, rollback)
+/// Run a host operation (configure, verify, `test_tool`, rollback)
 async fn run_host_operation(
     host: &str,
     operation: &str,
@@ -551,7 +545,7 @@ async fn run_host_operation(
     let controller = create_claude_code_controller(host)?;
 
     // Note: Server URL generation no longer needed for testing approach
-    let _server_url = format!("https://{}-be.glean.com/mcp/default", instance);
+    let _server_url = format!("https://{instance}-be.glean.com/mcp/default");
 
     let result = match operation {
         "verify" => controller.verify_mcp_server().await?,
@@ -568,8 +562,7 @@ async fn run_host_operation(
         "list" => controller.list_mcp_servers().await?,
         _ => {
             return Err(GleanMcpError::Host(format!(
-                "Unknown operation: {}. Available: verify, test_tool, test_all, list",
-                operation
+                "Unknown operation: {operation}. Available: verify, test_tool, test_all, list"
             )));
         }
     };
@@ -577,8 +570,8 @@ async fn run_host_operation(
     // Print result based on format
     if format == "json" {
         let json_output =
-            serde_json::to_string_pretty(&result).map_err(|e| GleanMcpError::Json(e))?;
-        println!("{}", json_output);
+            serde_json::to_string_pretty(&result).map_err(GleanMcpError::Json)?;
+        println!("{json_output}");
     } else {
         print_host_result(&result);
     }
@@ -587,7 +580,7 @@ async fn run_host_operation(
 }
 
 /// Check if a host application is available
-async fn check_host_availability(host: &str, format: &str) -> Result<bool> {
+fn check_host_availability(host: &str, format: &str) -> Result<bool> {
     let controller = create_claude_code_controller(host)?;
     let available = controller.check_availability()?;
 
@@ -601,12 +594,10 @@ async fn check_host_availability(host: &str, format: &str) -> Result<bool> {
             "{}",
             serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
         );
+    } else if available {
+        println!("✅ Host '{host}' is available");
     } else {
-        if available {
-            println!("✅ Host '{}' is available", host);
-        } else {
-            println!("❌ Host '{}' is not available", host);
-        }
+        println!("❌ Host '{host}' is not available");
     }
 
     Ok(available)
@@ -631,10 +622,10 @@ fn print_host_result(result: &HostOperationResult) {
     }
 
     if let Some(error) = &result.error {
-        println!("⚠️  Error: {}", error);
+        println!("⚠️  Error: {error}");
     }
 
     if let Some(duration) = result.duration {
-        println!("⏱️  Duration: {:?}", duration);
+        println!("⏱️  Duration: {duration:?}");
     }
 }

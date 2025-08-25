@@ -157,26 +157,24 @@ impl Default for ClaudeCodeController {
 }
 
 impl HostController for ClaudeCodeController {
-    fn verify_mcp_server(
+    async fn verify_mcp_server(
         &self,
-    ) -> impl std::future::Future<Output = Result<HostOperationResult>> + Send {
-        async move {
-            let start_time = Instant::now();
+    ) -> Result<HostOperationResult> {
+        let start_time = Instant::now();
 
-            match self.list_mcp_servers_internal().await {
-                Ok(output) => Ok(HostOperationResult::new_success(
-                    "claude-code",
-                    "verify_mcp_server",
-                    &format!("MCP servers verified: {output}"),
-                )
-                .with_duration(start_time.elapsed())),
-                Err(e) => Ok(HostOperationResult::new_error(
-                    "claude-code",
-                    "verify_mcp_server",
-                    &e.to_string(),
-                )
-                .with_duration(start_time.elapsed())),
-            }
+        match self.list_mcp_servers_internal().await {
+            Ok(output) => Ok(HostOperationResult::new_success(
+                "claude-code",
+                "verify_mcp_server",
+                &format!("MCP servers verified: {output}"),
+            )
+            .with_duration(start_time.elapsed())),
+            Err(e) => Ok(HostOperationResult::new_error(
+                "claude-code",
+                "verify_mcp_server",
+                &e.to_string(),
+            )
+            .with_duration(start_time.elapsed())),
         }
     }
 
@@ -212,50 +210,48 @@ impl HostController for ClaudeCodeController {
         }
     }
 
-    fn test_all_glean_tools(
+    async fn test_all_glean_tools(
         &self,
-    ) -> impl std::future::Future<Output = Result<HostOperationResult>> + Send {
-        async move {
-            let start_time = Instant::now();
+    ) -> Result<HostOperationResult> {
+        let start_time = Instant::now();
 
-            // Define core Glean tools to test
-            let glean_tools = vec![
-                ("glean_search", "remote work policy"),
-                ("chat", "What are the benefits of using Glean?"),
-                ("read_document", "https://docs.glean.com"),
-            ];
+        // Define core Glean tools to test
+        let glean_tools = vec![
+            ("glean_search", "remote work policy"),
+            ("chat", "What are the benefits of using Glean?"),
+            ("read_document", "https://docs.glean.com"),
+        ];
 
-            let mut results = Vec::new();
-            let mut success_count = 0;
+        let mut results = Vec::new();
+        let mut success_count = 0;
 
-            for (tool_name, sample_query) in &glean_tools {
-                match self.test_glean_tool(tool_name, sample_query).await {
-                    Ok(result) => {
-                        if result.success {
-                            success_count += 1;
-                        }
-                        results.push(format!(
-                            "{tool_name}: {}",
-                            if result.success { "✅" } else { "❌" }
-                        ));
+        for (tool_name, sample_query) in &glean_tools {
+            match self.test_glean_tool(tool_name, sample_query).await {
+                Ok(result) => {
+                    if result.success {
+                        success_count += 1;
                     }
-                    Err(_) => {
-                        results.push(format!("{tool_name}: ❌ Error"));
-                    }
+                    results.push(format!(
+                        "{tool_name}: {}",
+                        if result.success { "✅" } else { "❌" }
+                    ));
+                }
+                Err(_) => {
+                    results.push(format!("{tool_name}: ❌ Error"));
                 }
             }
-
-            let total_tools = glean_tools.len();
-            let details = format!(
-                "Tested {total_tools} Glean tools, {success_count} successful:\n{}",
-                results.join("\n")
-            );
-
-            Ok(
-                HostOperationResult::new_success("claude-code", "test_all_glean_tools", &details)
-                    .with_duration(start_time.elapsed()),
-            )
         }
+
+        let total_tools = glean_tools.len();
+        let details = format!(
+            "Tested {total_tools} Glean tools, {success_count} successful:\n{}",
+            results.join("\n")
+        );
+
+        Ok(
+            HostOperationResult::new_success("claude-code", "test_all_glean_tools", &details)
+                .with_duration(start_time.elapsed()),
+        )
     }
 
     fn check_availability(&self) -> Result<bool> {
@@ -273,26 +269,24 @@ impl HostController for ClaudeCodeController {
         "claude-code"
     }
 
-    fn list_mcp_servers(
+    async fn list_mcp_servers(
         &self,
-    ) -> impl std::future::Future<Output = Result<HostOperationResult>> + Send {
-        async move {
-            let start_time = Instant::now();
+    ) -> Result<HostOperationResult> {
+        let start_time = Instant::now();
 
-            match self.list_mcp_servers_internal().await {
-                Ok(output) => Ok(HostOperationResult::new_success(
-                    "claude-code",
-                    "list_mcp_servers",
-                    &format!("MCP servers: {output}"),
-                )
-                .with_duration(start_time.elapsed())),
-                Err(e) => Ok(HostOperationResult::new_error(
-                    "claude-code",
-                    "list_mcp_servers",
-                    &e.to_string(),
-                )
-                .with_duration(start_time.elapsed())),
-            }
+        match self.list_mcp_servers_internal().await {
+            Ok(output) => Ok(HostOperationResult::new_success(
+                "claude-code",
+                "list_mcp_servers",
+                &format!("MCP servers: {output}"),
+            )
+            .with_duration(start_time.elapsed())),
+            Err(e) => Ok(HostOperationResult::new_error(
+                "claude-code",
+                "list_mcp_servers",
+                &e.to_string(),
+            )
+            .with_duration(start_time.elapsed())),
         }
     }
 }
