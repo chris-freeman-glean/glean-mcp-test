@@ -27,7 +27,7 @@ The Glean MCP Testing Framework is a comprehensive Rust-based solution for valid
 - **Primary Glean Instance**: `glean-dev-be` (development environment)
 - **Server URL**: `https://glean-dev-be.glean.com/mcp/default`
 - **ChatGPT URL**: `https://glean-dev-be.glean.com/mcp/chatgpt`
-- **Transport**: Streamable HTTP (SSE)
+- **Transport**: Streamable HTTP (direct JSON-RPC calls via curl)
 - **Authentication**: OAuth 2.0 (Native or Bridge via mcp-remote)
 
 ### Glean MCP Tools to Test
@@ -71,7 +71,7 @@ The Glean MCP Testing Framework is a comprehensive Rust-based solution for valid
 #### Achievements:
 
 - ✅ **Project Setup**: Full Rust project with Rust 2024 edition and latest toolchain (1.89.0)
-- ✅ **MCP Inspector Integration**: Successfully connecting to `glean-dev-be.glean.com/mcp/default`
+- ✅ **Direct HTTP MCP Integration**: Successfully connecting to `glean-dev-be.glean.com/mcp/default`
 - ✅ **Server Validation**: Confirmed OAuth-protected MCP server is running correctly
 - ✅ **Authentication System**: Full support for `GLEAN_AUTH_TOKEN` with HTTP 200/202 validation
 - ✅ **CLI Interface**: Working commands for `inspect`, `config`, `prerequisites`, and `auth`
@@ -82,7 +82,8 @@ The Glean MCP Testing Framework is a comprehensive Rust-based solution for valid
 
 - **Server Connectivity**: ✅ Full connectivity with authenticated requests (HTTP 202 Accepted)
 - **Authentication**: ✅ Environment variable support (`GLEAN_AUTH_TOKEN`) with real token validation
-- **Tool Discovery**: ✅ Confirmed availability of core tools (glean_search, chat, read_document)
+- **Tool Discovery**: ✅ Confirmed availability of core tools (search, chat, read_document) via `tools/list`
+- **Tool Execution**: ✅ Successfully executing tools via `tools/call` with proper parameter handling
 - **Configuration**: ✅ Support for multiple Glean instances and host applications
 - **JSON/Text Output**: ✅ Flexible reporting formats implemented
 
@@ -93,6 +94,8 @@ cargo run -- prerequisites                     # Check system requirements
 cargo run -- inspect --instance glean-dev-be   # Test server connectivity
 cargo run -- auth --instance glean-dev-be       # Test authentication with GLEAN_AUTH_TOKEN
 cargo run -- config                            # Show configuration
+cargo run -- list-tools --instance glean-dev-be # List available MCP tools
+cargo run -- test-tool --tool search --query "remote work policy" # Test specific tools
 ```
 
 ---
@@ -152,33 +155,36 @@ cargo run -- config                            # Show configuration
 - ✅ Basic CLI that can parse commands
 - ✅ Configuration system for Glean instances
 
-### 1.2 MCP Inspector Integration
+### 1.2 Direct HTTP MCP Integration
 
 **Priority**: P0 | **Effort**: 3 days
 
 #### Tasks:
 
-- [x] Implement `GleanMCPInspector` struct (from PRD)
-- [x] Create async process execution using `smol` runtime
-- [x] Build tool validation logic for core Glean tools
-- [x] Implement JSON response parsing and validation
+- [x] Implement `GleanMCPInspector` struct with direct HTTP calls
+- [x] Create async process execution using `smol` runtime and curl
+- [x] Build tool validation logic for core Glean tools using `tools/list`
+- [x] Implement JSON-RPC response parsing and validation
 - [x] Create compliance reporting system
 - [x] Add support for configurable instance names
 - [x] Implement authentication token handling with HTTP 200/202 response validation
-- [ ] Write unit tests for inspector functionality
+- [x] Implement direct tool calling via `tools/call` with proper parameter handling
+- [ ] Write unit tests for HTTP MCP client functionality
 
 #### Implementation Details:
 
 ```rust
-// From PRD - already specified
+// Direct HTTP MCP client implementation
 pub struct GleanMCPInspector {
     server_url: String,
-    inspector_cmd: String,
+    auth_token: Option<String>,
 }
 
 impl GleanMCPInspector {
     pub async fn validate_server_with_inspector(&self) -> Result<InspectorResult, Box<dyn std::error::Error>>
-    pub fn validate_glean_tools(&self, inspector_data: Value) -> InspectorResult
+    pub async fn list_available_tools(&self) -> Result<InspectorResult, Box<dyn std::error::Error>>
+    pub async fn test_tool_with_inspector(&self, tool_name: &str, query: &str) -> Result<InspectorResult, Box<dyn std::error::Error>>
+    pub fn validate_glean_tools(&self, tools_data: Value) -> InspectorResult
     fn validate_tool_schema(&self, tool_name: &str, available_tools: &[Value]) -> bool
 }
 ```
@@ -193,10 +199,12 @@ impl GleanMCPInspector {
 
 #### Deliverables:
 
-- ✅ Working MCP Inspector integration
-- ✅ Tool validation reports
+- ✅ Working direct HTTP MCP client integration
+- ✅ Tool validation reports via JSON-RPC calls
 - ✅ Authentication system with real token support
 - ✅ CLI commands: `glean-mcp-test inspect --instance glean-dev-be` and `glean-mcp-test auth`
+- ✅ Tool testing commands: `glean-mcp-test test-tool --tool search --query "test"`
+- ✅ Tool listing commands: `glean-mcp-test list-tools --instance glean-dev-be`
 
 ### 1.3 Response Validation System
 

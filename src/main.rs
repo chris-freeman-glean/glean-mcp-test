@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
-use glean_mcp_test::{GleanConfig, GleanMcpError, Result, run_validation};
+use glean_mcp_test::{
+    GleanConfig, GleanMcpError, Result, run_list_tools, run_tool_test, run_validation,
+};
 
 #[derive(Parser)]
 #[command(name = "glean-mcp-test")]
@@ -40,6 +42,36 @@ enum Commands {
         /// Glean instance name (default: glean-dev-be)
         #[arg(short, long, default_value = "glean-dev-be")]
         instance: String,
+    },
+
+    /// Test a specific MCP tool with a query
+    TestTool {
+        /// Tool name (search, chat, read_document, etc.)
+        #[arg(short, long)]
+        tool: String,
+
+        /// Query to send to the tool
+        #[arg(short, long)]
+        query: String,
+
+        /// Glean instance name (default: glean-dev-be)
+        #[arg(short, long, default_value = "glean-dev-be")]
+        instance: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// List available tools from the MCP server
+    ListTools {
+        /// Glean instance name (default: glean-dev-be)
+        #[arg(short, long, default_value = "glean-dev-be")]
+        instance: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -154,6 +186,83 @@ fn main() -> Result<()> {
             }
 
             Ok(())
+        }
+
+        Commands::TestTool {
+            tool,
+            query,
+            instance,
+            format,
+        } => {
+            println!("🔧 Testing MCP tool: {} with query: \"{}\"", tool, query);
+            println!("📋 Instance: {}", instance);
+
+            match run_tool_test(&tool, &query, Some(&instance), &format) {
+                Ok(result) => {
+                    if result.success {
+                        if format == "json" {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&result)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            );
+                        } else {
+                            println!("\n🎉 Tool test completed successfully!");
+                            if let Some(response_data) = &result.inspector_data {
+                                println!("📄 Response:");
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(response_data)
+                                        .unwrap_or_else(|_| "No response data".to_string())
+                                );
+                            }
+                        }
+                        std::process::exit(0);
+                    } else {
+                        println!("❌ Tool test failed!");
+                        if let Some(error) = &result.error {
+                            println!("Error: {}", error);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to run tool test: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::ListTools { instance, format } => {
+            println!("📋 Listing available tools from MCP server");
+            println!("📋 Instance: {}", instance);
+
+            match run_list_tools(Some(&instance), &format) {
+                Ok(result) => {
+                    if result.success {
+                        if format == "json" {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&result)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            );
+                        } else {
+                            println!("\n🎉 Tools listed successfully!");
+                        }
+                        std::process::exit(0);
+                    } else {
+                        println!("❌ Failed to list tools!");
+                        if let Some(error) = &result.error {
+                            println!("Error: {}", error);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to list tools: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }

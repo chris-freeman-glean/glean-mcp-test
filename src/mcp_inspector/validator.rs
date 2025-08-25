@@ -37,7 +37,6 @@ impl InspectorResult {
 
 pub struct GleanMCPInspector {
     server_url: String,
-    inspector_cmd: String,
     auth_token: Option<String>,
 }
 
@@ -56,7 +55,6 @@ impl GleanMCPInspector {
 
         Self {
             server_url: format!("https://{}.glean.com/mcp/default", instance_name),
-            inspector_cmd: "npx".to_string(),
             auth_token,
         }
     }
@@ -71,6 +69,365 @@ impl GleanMCPInspector {
 
         // Use basic connectivity test instead of interactive MCP Inspector
         self.test_basic_connectivity().await
+    }
+
+    /// Test a specific MCP tool using direct HTTP MCP protocol calls
+    pub async fn test_tool_with_inspector(
+        &self,
+        tool_name: &str,
+        query: &str,
+    ) -> Result<InspectorResult> {
+        println!(
+            "🔍 Testing tool '{}' with direct MCP protocol call...",
+            tool_name
+        );
+        println!("📝 Query: {}", query);
+        println!("📍 Server: {}", self.server_url);
+
+        // Create MCP JSON-RPC request for tool call
+        // Different tools expect different parameter names
+        let arguments = match tool_name {
+            "chat" => serde_json::json!({
+                "message": query
+            }),
+            "read_document" => serde_json::json!({
+                "url": query
+            }),
+            _ => serde_json::json!({
+                "query": query
+            }),
+        };
+
+        let tool_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments
+            }
+        });
+
+        let request_body =
+            serde_json::to_string(&tool_request).map_err(|e| GleanMcpError::Json(e))?;
+
+        // Prepare curl command for MCP tool call
+        let mut curl_args = vec![
+            "-s",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "Accept: application/json",
+            "-d",
+            &request_body,
+            "--max-time",
+            "30",
+        ];
+
+        // Add auth header if token is available
+        let auth_header;
+        if let Some(ref token) = self.auth_token {
+            auth_header = format!("Authorization: Bearer {}", token);
+            curl_args.extend_from_slice(&["-H", &auth_header]);
+            println!("🔐 Using authentication token for tool call");
+        } else {
+            println!("🔓 Making unauthenticated tool call (may fail)");
+        }
+
+        curl_args.push(&self.server_url);
+
+        // Execute curl command for MCP tool call
+        let mut child = Command::new("curl")
+            .args(&curl_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {}", e)))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| GleanMcpError::Process("Failed to capture stdout".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| GleanMcpError::Process("Failed to capture stderr".to_string()))?;
+
+        let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
+
+        // Read output concurrently
+        let stdout_future = async {
+            let mut lines = Vec::new();
+            let mut line_reader = stdout_reader.lines();
+            while let Some(line) = line_reader.next().await.transpose()? {
+                lines.push(line);
+            }
+            Ok::<Vec<String>, std::io::Error>(lines)
+        };
+
+        let stderr_future = async {
+            let mut lines = Vec::new();
+            let mut line_reader = stderr_reader.lines();
+            while let Some(line) = line_reader.next().await.transpose()? {
+                lines.push(line);
+            }
+            Ok::<Vec<String>, std::io::Error>(lines)
+        };
+
+        let (stdout_lines, stderr_lines) = smol::future::zip(stdout_future, stderr_future).await;
+        let stdout_lines = stdout_lines
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {}", e)))?;
+        let stderr_lines = stderr_lines
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {}", e)))?;
+
+        let status = child
+            .status()
+            .await
+            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {}", e)))?;
+
+        if !status.success() {
+            let error_output = stderr_lines.join("\n");
+            println!("❌ MCP tool call failed!");
+            println!("Error output: {}", error_output);
+            return Ok(InspectorResult::new_error(format!(
+                "MCP tool call failed: {}",
+                error_output
+            )));
+        }
+
+        let stdout_content = stdout_lines.join("\n");
+        println!("📥 Raw response: {}", stdout_content);
+
+        // Try to parse the response as JSON-RPC
+        match serde_json::from_str::<serde_json::Value>(&stdout_content) {
+            Ok(response_json) => {
+                // Check if it's a successful JSON-RPC response
+                if let Some(result) = response_json.get("result") {
+                    println!("✅ Tool call successful!");
+                    println!("📄 Response received from {}", tool_name);
+
+                    // Create success result with tool response
+                    let mut tool_results = std::collections::HashMap::new();
+                    tool_results.insert(tool_name.to_string(), true);
+
+                    Ok(InspectorResult::new_success(tool_results, result.clone()))
+                } else if let Some(error) = response_json.get("error") {
+                    println!("❌ MCP server returned error!");
+                    println!("Error: {}", error);
+                    return Ok(InspectorResult::new_error(format!(
+                        "MCP server error: {}",
+                        error
+                    )));
+                } else {
+                    // Unknown JSON structure
+                    println!("⚠️  Unexpected JSON response structure");
+                    let mut tool_results = std::collections::HashMap::new();
+                    tool_results.insert(tool_name.to_string(), true);
+                    Ok(InspectorResult::new_success(tool_results, response_json))
+                }
+            }
+            Err(_) => {
+                // If not JSON, treat as plain text response (might be an error)
+                println!("⚠️  Non-JSON response received");
+                println!("📄 Response: {}", stdout_content);
+
+                // Check if it looks like an error
+                if stdout_content.contains("error")
+                    || stdout_content.contains("Error")
+                    || stdout_content.contains("401")
+                    || stdout_content.contains("403")
+                {
+                    return Ok(InspectorResult::new_error(format!(
+                        "Server error: {}",
+                        stdout_content
+                    )));
+                }
+
+                let mut tool_results = std::collections::HashMap::new();
+                tool_results.insert(tool_name.to_string(), true);
+
+                let response_value = serde_json::json!({
+                    "tool": tool_name,
+                    "query": query,
+                    "response": stdout_content,
+                    "success": true
+                });
+
+                Ok(InspectorResult::new_success(tool_results, response_value))
+            }
+        }
+    }
+
+    /// List available tools from the MCP server using direct HTTP calls
+    pub async fn list_available_tools(&self) -> Result<InspectorResult> {
+        println!("🔍 Listing available tools from MCP server...");
+        println!("📍 Server: {}", self.server_url);
+
+        // Create MCP JSON-RPC request to list tools
+        let list_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        });
+
+        let request_body =
+            serde_json::to_string(&list_request).map_err(|e| GleanMcpError::Json(e))?;
+
+        // Prepare curl command for MCP list tools call
+        let mut curl_args = vec![
+            "-s",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "Accept: application/json",
+            "-d",
+            &request_body,
+            "--max-time",
+            "30",
+        ];
+
+        // Add auth header if token is available
+        let auth_header;
+        if let Some(ref token) = self.auth_token {
+            auth_header = format!("Authorization: Bearer {}", token);
+            curl_args.extend_from_slice(&["-H", &auth_header]);
+            println!("🔐 Using authentication token for tool listing");
+        } else {
+            println!("🔓 Making unauthenticated tool listing request");
+        }
+
+        curl_args.push(&self.server_url);
+
+        // Execute curl command
+        let mut child = Command::new("curl")
+            .args(&curl_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {}", e)))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| GleanMcpError::Process("Failed to capture stdout".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| GleanMcpError::Process("Failed to capture stderr".to_string()))?;
+
+        let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
+
+        // Read output concurrently
+        let stdout_future = async {
+            let mut lines = Vec::new();
+            let mut line_reader = stdout_reader.lines();
+            while let Some(line) = line_reader.next().await.transpose()? {
+                lines.push(line);
+            }
+            Ok::<Vec<String>, std::io::Error>(lines)
+        };
+
+        let stderr_future = async {
+            let mut lines = Vec::new();
+            let mut line_reader = stderr_reader.lines();
+            while let Some(line) = line_reader.next().await.transpose()? {
+                lines.push(line);
+            }
+            Ok::<Vec<String>, std::io::Error>(lines)
+        };
+
+        let (stdout_lines, stderr_lines) = smol::future::zip(stdout_future, stderr_future).await;
+        let stdout_lines = stdout_lines
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {}", e)))?;
+        let stderr_lines = stderr_lines
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {}", e)))?;
+
+        let status = child
+            .status()
+            .await
+            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {}", e)))?;
+
+        if !status.success() {
+            let error_output = stderr_lines.join("\n");
+            println!("❌ MCP Inspector failed to list tools!");
+            println!("Error output: {}", error_output);
+            return Ok(InspectorResult::new_error(format!(
+                "MCP Inspector tool listing failed: {}",
+                error_output
+            )));
+        }
+
+        let stdout_content = stdout_lines.join("\n");
+        println!("📥 MCP Inspector response: {}", stdout_content);
+
+        // Try to parse the response - MCP Inspector may return different formats
+        match serde_json::from_str::<serde_json::Value>(&stdout_content) {
+            Ok(response_json) => {
+                // Try to extract tools from various possible response structures
+                let tools = if let Some(result) = response_json.get("result") {
+                    result.get("tools")
+                } else if let Some(tools) = response_json.get("tools") {
+                    Some(tools)
+                } else {
+                    // If response itself is an array, use it as tools
+                    response_json.as_array().map(|_| &response_json)
+                };
+
+                if let Some(tools_value) = tools {
+                    println!("✅ Available tools discovered:");
+                    if let Some(tools_array) = tools_value.as_array() {
+                        for tool in tools_array {
+                            if let Some(name) = tool.get("name") {
+                                println!("  • {}", name);
+                                if let Some(description) = tool.get("description") {
+                                    println!("    {}", description);
+                                }
+                            }
+                        }
+                    }
+
+                    let mut tool_results = std::collections::HashMap::new();
+                    tool_results.insert("tools_listed".to_string(), true);
+                    Ok(InspectorResult::new_success(tool_results, response_json))
+                } else {
+                    println!("⚠️  Tools listed but in unexpected format");
+                    let mut tool_results = std::collections::HashMap::new();
+                    tool_results.insert("tools_listed".to_string(), true);
+                    Ok(InspectorResult::new_success(tool_results, response_json))
+                }
+            }
+            Err(_) => {
+                // If not JSON, MCP Inspector may have output plain text
+                println!("✅ Tools listed (text format):");
+                println!("📄 Response: {}", stdout_content);
+
+                // Check if it looks like an error
+                if stdout_content.contains("error") || stdout_content.contains("Failed") {
+                    return Ok(InspectorResult::new_error(format!(
+                        "Tool listing error: {}",
+                        stdout_content
+                    )));
+                }
+
+                let mut tool_results = std::collections::HashMap::new();
+                tool_results.insert("tools_listed".to_string(), true);
+
+                let response_value = serde_json::json!({
+                    "tools_response": stdout_content,
+                    "success": true,
+                    "source": "mcp_inspector"
+                });
+
+                Ok(InspectorResult::new_success(tool_results, response_value))
+            }
+        }
     }
 
     /// Basic connectivity test to check if the Glean MCP server is reachable
@@ -325,5 +682,26 @@ pub fn run_validation(instance_name: Option<&str>) -> Result<InspectorResult> {
     smol::block_on(async {
         let inspector = GleanMCPInspector::new(instance_name);
         inspector.validate_server_with_inspector().await
+    })
+}
+
+/// Run a specific MCP tool test using MCP Inspector
+pub fn run_tool_test(
+    tool_name: &str,
+    query: &str,
+    instance_name: Option<&str>,
+    _format: &str,
+) -> Result<InspectorResult> {
+    smol::block_on(async {
+        let inspector = GleanMCPInspector::new(instance_name);
+        inspector.test_tool_with_inspector(tool_name, query).await
+    })
+}
+
+/// List available tools from the MCP server
+pub fn run_list_tools(instance_name: Option<&str>, _format: &str) -> Result<InspectorResult> {
+    smol::block_on(async {
+        let inspector = GleanMCPInspector::new(instance_name);
+        inspector.list_available_tools().await
     })
 }

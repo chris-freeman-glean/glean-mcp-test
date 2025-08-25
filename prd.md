@@ -30,9 +30,9 @@ Glean's MCP server needs to be validated across multiple host applications to en
 ### Server Details
 
 - **Default Instance**: `glean-dev-be` (development environment)
-- **Remote MCP Server URL**: `https://glean-dev-be.glean.com/mcp/default/sse`
+- **Remote MCP Server URL**: `https://glean-dev-be.glean.com/mcp/default`
 - **ChatGPT Specific URL**: `https://glean-dev-be.glean.com/mcp/chatgpt`
-- **Transport**: Streamable HTTP (SSE)
+- **Transport**: Streamable HTTP
 - **Authentication**: OAuth 2.0 (Native or Bridge via mcp-remote)
 
 ### Supported Tools
@@ -87,24 +87,24 @@ Based on Glean's validated compatibility matrix:
 
 ## Functional Requirements
 
-### FR-1: Glean MCP Server Health Validation Using MCP Inspector
+### FR-1: Glean MCP Server Health Validation Using Direct HTTP Protocol
 
 **Priority**: P0 (Blocker)
 
-**Description**: Use the official MCP Inspector tool to validate Glean MCP server connectivity and tool availability before host testing.
+**Description**: Use direct HTTP MCP protocol calls to validate Glean MCP server connectivity and tool availability before host testing.
 
 **Acceptance Criteria**:
 
-- [ ] Install and configure `@modelcontextprotocol/inspector` for Glean server testing
-- [ ] Connect to Glean MCP server at `https://glean-dev-be.glean.com/mcp/default/sse`
-- [ ] Use MCP Inspector to enumerate all available Glean MCP tools
-- [ ] Execute MCP Inspector tool validation for each core tool (glean_search, chat, read_document)
-- [ ] Validate tool schemas and parameter requirements using MCP Inspector
-- [ ] Generate MCP Inspector compliance report showing tool compatibility
+- [ ] Implement direct HTTP MCP JSON-RPC client for Glean server testing
+- [ ] Connect to Glean MCP server at `https://glean-dev-be.glean.com/mcp/default`
+- [ ] Use HTTP calls to enumerate all available Glean MCP tools via `tools/list`
+- [ ] Execute tool validation for each core tool (glean_search, chat, read_document) via `tools/call`
+- [ ] Validate tool responses and parameter requirements using direct protocol calls
+- [ ] Generate MCP compliance report showing tool compatibility
 - [ ] Report 100% tool validation success before proceeding to host testing
 - [ ] Support configurable instance names (default: glean-dev-be)
 
-**MCP Inspector Integration**:
+**Direct HTTP MCP Protocol Integration**:
 
 **Dependencies** (add to `Cargo.toml`):
 
@@ -122,7 +122,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use async_process::Command;
 use smol::io::{AsyncBufReadExt, BufReader};
-use smol::process::Stdio;
+use std::process::Stdio;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InspectorResult {
@@ -154,29 +154,74 @@ impl InspectorResult {
 
 pub struct GleanMCPInspector {
     server_url: String,
-    inspector_cmd: String,
+    auth_token: Option<String>,
 }
 
 impl GleanMCPInspector {
     pub fn new(instance_name: Option<&str>) -> Self {
         let instance_name = instance_name.unwrap_or("glean-dev-be");
+        let auth_token = std::env::var("GLEAN_AUTH_TOKEN").ok();
+
         Self {
-            server_url: format!("https://{}.glean.com/mcp/default/sse", instance_name),
-            inspector_cmd: "npx".to_string(),
+            server_url: format!("https://{}.glean.com/mcp/default", instance_name),
+            auth_token,
         }
     }
 
-    /// Use MCP Inspector to validate Glean server:
-    /// 1. Test server connection and protocol compliance
+    /// Use direct HTTP MCP calls to validate Glean server:
+    /// 1. Test server connection via tools/list
     /// 2. Enumerate all available tools
     /// 3. Validate tool schemas match Glean specifications
-    /// 4. Test sample tool executions
+    /// 4. Test sample tool executions via tools/call
     pub async fn validate_server_with_inspector(&self) -> Result<InspectorResult, Box<dyn std::error::Error>> {
-        // Run MCP Inspector against Glean server using smol
-        let args = vec!["@modelcontextprotocol/inspector", &self.server_url];
+        // First, list available tools using direct HTTP JSON-RPC
+        let list_result = self.list_available_tools().await?;
 
-        let mut child = Command::new(&self.inspector_cmd)
-            .args(&args)
+        if !list_result.success {
+            return Ok(list_result);
+        }
+
+        // Extract tools data for validation
+        let tools_data = list_result.inspector_data
+            .as_ref()
+            .ok_or("No tools data received")?;
+
+        Ok(self.validate_glean_tools(tools_data.clone()))
+    }
+
+    /// List available tools using direct HTTP MCP protocol call
+    pub async fn list_available_tools(&self) -> Result<InspectorResult, Box<dyn std::error::Error>> {
+        // Create MCP JSON-RPC request to list tools
+        let list_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        });
+
+        let request_body = serde_json::to_string(&list_request)?;
+
+        // Prepare curl command for MCP list tools call
+        let mut curl_args = vec![
+            "-s", "-X", "POST",
+            "-H", "Content-Type: application/json",
+            "-H", "Accept: application/json",
+            "-d", &request_body,
+            "--max-time", "30",
+        ];
+
+        // Add auth header if token is available
+        let auth_header;
+        if let Some(ref token) = self.auth_token {
+            auth_header = format!("Authorization: Bearer {}", token);
+            curl_args.extend_from_slice(&["-H", &auth_header]);
+        }
+
+        curl_args.push(&self.server_url);
+
+        // Execute curl command
+        let mut child = Command::new("curl")
+            .args(&curl_args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -215,21 +260,62 @@ impl GleanMCPInspector {
         }
 
         let stdout_content = stdout_lines.join("\n");
-        let inspector_output: Value = serde_json::from_str(&stdout_content)?;
 
-        Ok(self.validate_glean_tools(inspector_output))
+        // Parse JSON-RPC response
+        match serde_json::from_str::<Value>(&stdout_content) {
+            Ok(response_json) => {
+                if let Some(result) = response_json.get("result") {
+                    let mut tool_results = HashMap::new();
+                    tool_results.insert("tools_list".to_string(), true);
+                    Ok(InspectorResult::new_success(tool_results, result.clone()))
+                } else if let Some(error) = response_json.get("error") {
+                    Ok(InspectorResult::new_error(format!("MCP server error: {}", error)))
+                } else {
+                    Ok(InspectorResult::new_error("Invalid JSON-RPC response".to_string()))
+                }
+            }
+            Err(e) => Ok(InspectorResult::new_error(format!("JSON parse error: {}", e)))
+        }
     }
 
-    /// Validate that Glean-specific tools are present and correctly configured:
-    /// - glean_search: Requires query parameter, returns search results
-    /// - chat: Requires message parameter, returns AI response
-    /// - read_document: Requires document_id/url, returns document content
-    pub fn validate_glean_tools(&self, inspector_data: Value) -> InspectorResult {
+    /// Test a specific tool using direct HTTP MCP protocol call
+    pub async fn test_tool(&self, tool_name: &str, query: &str) -> Result<InspectorResult, Box<dyn std::error::Error>> {
+        // Create MCP JSON-RPC request for tool call
+        let arguments = match tool_name {
+            "chat" => serde_json::json!({"message": query}),
+            "read_document" => serde_json::json!({"url": query}),
+            _ => serde_json::json!({"query": query})
+        };
+
+        let tool_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments
+            }
+        });
+
+        let request_body = serde_json::to_string(&tool_request)?;
+
+        // Execute tool call via curl (similar to list_available_tools)
+        // ... curl execution logic ...
+
+        Ok(InspectorResult::new_error("Tool testing implementation pending".to_string()))
+    }
+
+    /// Validate that Glean-specific tools are present and correctly configured
+    pub fn validate_glean_tools(&self, tools_data: Value) -> InspectorResult {
         let expected_tools = vec!["glean_search", "chat", "read_document"];
-        let available_tools = inspector_data
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .unwrap_or(&vec![]);
+
+        // Extract tools array from MCP response
+        let available_tools = if let Some(tools_array) = tools_data.get("tools") {
+            tools_array.as_array().unwrap_or(&vec![])
+        } else {
+            // Handle case where tools_data itself is the array
+            tools_data.as_array().unwrap_or(&vec![])
+        };
 
         let mut tool_validation = HashMap::new();
         for tool_name in &expected_tools {
@@ -243,9 +329,9 @@ impl GleanMCPInspector {
         let success_rate = success_count as f64 / expected_tools.len() as f64;
 
         if success_rate == 1.0 {
-            InspectorResult::new_success(tool_validation, inspector_data)
+            InspectorResult::new_success(tool_validation, tools_data)
         } else {
-            let mut result = InspectorResult::new_success(tool_validation, inspector_data);
+            let mut result = InspectorResult::new_success(tool_validation, tools_data);
             result.success = false;
             result
         }
@@ -271,38 +357,55 @@ pub fn run_validation(instance_name: Option<&str>) -> Result<InspectorResult, Bo
 }
 ```
 
-**MCP Inspector CLI Integration**:
+**Direct HTTP MCP Validation Script**:
 
 ```bash
-# Phase 0: MCP Inspector Validation Script
+# Phase 0: Direct HTTP MCP Validation Script
 #!/bin/bash
 # validate_glean_mcp.sh
 
 INSTANCE_NAME=${1:-"glean-dev-be"}
-SERVER_URL="https://${INSTANCE_NAME}.glean.com/mcp/default/sse"
+SERVER_URL="https://${INSTANCE_NAME}.glean.com/mcp/default"
 
-echo "🔍 Running MCP Inspector against Glean server..."
+echo "🔍 Testing Glean MCP server with direct HTTP calls..."
 echo "📍 Server: $SERVER_URL"
 
-# Run MCP Inspector with Glean server
-npx @modelcontextprotocol/inspector inspect $SERVER_URL \
-    --output-format json \
-    --validate-tools \
-    --test-execution \
-    > glean_inspector_results.json
+# Test tools/list endpoint
+echo "📋 Listing available tools..."
+TOOLS_LIST_RESPONSE=$(curl -s -X POST \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    -H "Authorization: Bearer ${GLEAN_AUTH_TOKEN}" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+    --max-time 30 \
+    "$SERVER_URL")
 
-# Check if all Glean tools are available
+echo "📥 Tools list response: $TOOLS_LIST_RESPONSE"
+
+# Parse JSON response and check for Glean tools
 GLEAN_TOOLS=("glean_search" "chat" "read_document")
 MISSING_TOOLS=()
 
 for tool in "${GLEAN_TOOLS[@]}"; do
-    if ! jq -e ".tools[] | select(.name == \"$tool\")" glean_inspector_results.json > /dev/null; then
+    if ! echo "$TOOLS_LIST_RESPONSE" | jq -e ".result.tools[] | select(.name == \"$tool\")" > /dev/null 2>&1; then
         MISSING_TOOLS+=("$tool")
     fi
 done
 
 if [ ${#MISSING_TOOLS[@]} -eq 0 ]; then
     echo "✅ All Glean MCP tools validated successfully"
+
+    # Test a sample tool call
+    echo "🧪 Testing search tool..."
+    SEARCH_RESPONSE=$(curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json" \
+        -H "Authorization: Bearer ${GLEAN_AUTH_TOKEN}" \
+        -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"test"}}}' \
+        --max-time 30 \
+        "$SERVER_URL")
+
+    echo "📊 Search test response received"
     echo "🚀 Proceeding to host application testing..."
     exit 0
 else
@@ -352,7 +455,7 @@ on configureGleanInCursor()
             -- Configure with mcp-remote bridge for glean-dev-be
             set value of text field "Name" to "glean"
             set value of text field "Command" to "npx"
-            set gleanURL to "https://" & gleanInstance & ".glean.com/mcp/default/sse"
+            set gleanURL to "https://" & gleanInstance & ".glean.com/mcp/default"
             set value of text field "Args" to "-y, mcp-remote, " & gleanURL
 
             click button "Save" of window 1
@@ -383,7 +486,7 @@ on configureGleanInVSCode()
             delay 1
 
             -- Configure Glean server
-            set gleanURL to "https://" & gleanInstance & ".glean.com/mcp/default/sse"
+            set gleanURL to "https://" & gleanInstance & ".glean.com/mcp/default"
             set mcpConfig to "{\"servers\": {\"glean\": {\"type\": \"streamable-http\", \"url\": \"" & gleanURL & "\"}}}"
             keystroke mcpConfig
 
@@ -685,7 +788,7 @@ Based on Glean's validated compatibility matrix:
 glean_instance:
   name: 'glean-dev-be' # Default development instance
   environment: 'development' # Primary testing environment
-  server_url: 'https://glean-dev-be.glean.com/mcp/default/sse'
+  server_url: 'https://glean-dev-be.glean.com/mcp/default'
   chatgpt_url: 'https://glean-dev-be.glean.com/mcp/chatgpt'
 
 mcp_inspector:
@@ -718,17 +821,17 @@ host_applications:
     auth_method: 'bridge'
     config_type: 'local'
     mcp_config_path: '~/.cursor/mcp.json'
-    server_url: 'https://glean-dev-be.glean.com/mcp/default/sse'
+    server_url: 'https://glean-dev-be.glean.com/mcp/default'
   vscode:
     auth_method: 'native'
     config_type: 'global'
     mcp_config_path: '~/.vscode/settings.json'
-    server_url: 'https://glean-dev-be.glean.com/mcp/default/sse'
+    server_url: 'https://glean-dev-be.glean.com/mcp/default'
   claude_desktop:
     auth_method: 'native'
     config_type: 'local'
     mcp_config_path: '~/Library/Application Support/Claude/claude_desktop_config.json'
-    server_url: 'https://glean-dev-be.glean.com/mcp/default/sse'
+    server_url: 'https://glean-dev-be.glean.com/mcp/default'
 ```
 
 ## User Stories and Use Cases
