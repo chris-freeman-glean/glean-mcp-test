@@ -217,7 +217,7 @@ fn main() {
         let _ = term.write_line(&format!(
             "{}{}",
             CROSS_MARK,
-            style(format!("Command failed: {}", e)).red().bold()
+            style(format!("Command failed: {e}")).red().bold()
         ));
         std::process::exit(1);
     }
@@ -246,12 +246,12 @@ async fn handle_command(command: Commands) -> Result<()> {
                 Ok(result) => {
                     if format == "json" {
                         match serde_json::to_string_pretty(&result) {
-                            Ok(json_output) => println!("{}", json_output),
+                            Ok(json_output) => println!("{json_output}"),
                             Err(e) => {
                                 let _ = term.write_line(&format!(
                                     "{}{}",
                                     CROSS_MARK,
-                                    style(format!("Failed to serialize JSON: {}", e)).red()
+                                    style(format!("Failed to serialize JSON: {e}")).red()
                                 ));
                                 std::process::exit(1);
                             }
@@ -260,8 +260,8 @@ async fn handle_command(command: Commands) -> Result<()> {
                         print_enhanced_text_result(&result);
                     }
 
+                    let _ = term.write_line("");
                     if result.success {
-                        let _ = term.write_line("");
                         let _ = term.write_line(&format!(
                             "{}{}",
                             PARTY,
@@ -274,7 +274,6 @@ async fn handle_command(command: Commands) -> Result<()> {
                         ));
                         std::process::exit(0);
                     } else {
-                        let _ = term.write_line("");
                         let _ = term.write_line(&format!(
                             "{}{}",
                             CROSS_MARK,
@@ -290,7 +289,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to run MCP Inspector: {}", e)).red()
+                        style(format!("Failed to run MCP Inspector: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -325,7 +324,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                         let _ = term.write_line(&format!(
                             "{}{}",
                             CROSS_MARK,
-                            style(format!("Failed to serialize config: {}", e)).red()
+                            style(format!("Failed to serialize config: {e}")).red()
                         ));
                         std::process::exit(1);
                     }
@@ -379,7 +378,7 @@ async fn handle_command(command: Commands) -> Result<()> {
         }
 
         Commands::Prerequisites => match check_prerequisites_with_progress().await {
-            Ok(_) => {
+            Ok(()) => {
                 let term = Term::stdout();
                 let _ = term.write_line("");
                 let _ = term.write_line(&format!(
@@ -397,7 +396,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                 let _ = term.write_line(&format!(
                     "{}{}",
                     CROSS_MARK,
-                    style(format!("Prerequisites check failed: {}", e)).red()
+                    style(format!("Prerequisites check failed: {e}")).red()
                 ));
                 std::process::exit(1);
             }
@@ -527,7 +526,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to run authentication test: {}", e)).red()
+                        style(format!("Failed to run authentication test: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -590,7 +589,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to run tool test: {}", e)).red()
+                        style(format!("Failed to run tool test: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -642,7 +641,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to list tools: {}", e)).red()
+                        style(format!("Failed to list tools: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -683,7 +682,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to verify host: {}", e)).red()
+                        style(format!("Failed to verify host: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -733,7 +732,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to test Glean tool on host: {}", e)).red()
+                        style(format!("Failed to test Glean tool on host: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -774,7 +773,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to test all Glean tools: {}", e)).red()
+                        style(format!("Failed to test all Glean tools: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -812,7 +811,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to check host availability: {}", e)).red()
+                        style(format!("Failed to check host availability: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -851,7 +850,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to list MCP servers: {}", e)).red()
+                        style(format!("Failed to list MCP servers: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -874,11 +873,7 @@ async fn handle_command(command: Commands) -> Result<()> {
             output,
         } => {
             // Determine the actual format to use (--json flag overrides --format)
-            let actual_format = if json {
-                "json".to_string()
-            } else {
-                format.clone()
-            };
+            let actual_format = if json { "json".to_string() } else { format };
 
             let term = Term::stdout();
 
@@ -908,8 +903,8 @@ async fn handle_command(command: Commands) -> Result<()> {
             }
 
             let test_options = glean_mcp_test::TestAllOptions {
-                tools_filter: tools.clone(),
-                scenario: scenario.clone(),
+                tools_filter: tools,
+                scenario,
                 parallel,
                 max_concurrent,
                 timeout,
@@ -926,7 +921,7 @@ async fn handle_command(command: Commands) -> Result<()> {
 
                     if let Some(output_file) = output {
                         match std::fs::write(&output_file, &output_content) {
-                            Ok(_) => {
+                            Ok(()) => {
                                 let _ = term.write_line(&format!(
                                     "📄 Results written to: {}",
                                     style(&output_file).cyan()
@@ -936,14 +931,14 @@ async fn handle_command(command: Commands) -> Result<()> {
                                 let _ = term.write_line(&format!(
                                     "{}{}",
                                     CROSS_MARK,
-                                    style(format!("Failed to write output file: {}", e)).red()
+                                    style(format!("Failed to write output file: {e}")).red()
                                 ));
                                 std::process::exit(1);
                             }
                         }
                     } else if actual_format == "json" {
                         // For JSON output, print directly without styling
-                        println!("{}", output_content);
+                        println!("{output_content}");
                     } else {
                         // For text output, use console
                         let _ = term.write_line(&output_content);
@@ -973,7 +968,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                     let _ = term.write_line(&format!(
                         "{}{}",
                         CROSS_MARK,
-                        style(format!("Failed to run test-all: {}", e)).red()
+                        style(format!("Failed to run test-all: {e}")).red()
                     ));
                     std::process::exit(1);
                 }
@@ -998,7 +993,7 @@ fn print_enhanced_text_result(result: &glean_mcp_test::InspectorResult) {
     } else {
         format!("{}{}", CROSS_MARK, style("FAILED").red().bold())
     };
-    let _ = term.write_line(&format!("Status: {}", status_text));
+    let _ = term.write_line(&format!("Status: {status_text}"));
 
     if let Some(tool_results) = &result.tool_results {
         let _ = term.write_line("");
@@ -1015,7 +1010,7 @@ fn print_enhanced_text_result(result: &glean_mcp_test::InspectorResult) {
             } else {
                 (CROSS_MARK, style(tool).red())
             };
-            let _ = term.write_line(&format!("  {}{}", emoji, tool_style));
+            let _ = term.write_line(&format!("  {emoji}{tool_style}"));
         }
     }
 
@@ -1028,95 +1023,6 @@ fn print_enhanced_text_result(result: &glean_mcp_test::InspectorResult) {
         ));
         let _ = term.write_line(&format!("  {}", style(error).dim()));
     }
-}
-
-fn check_prerequisites() -> Result<()> {
-    let term = Term::stdout();
-    let _ = term.write_line(&format!(
-        "{}{}",
-        MAGNIFYING_GLASS,
-        style("Checking system prerequisites...").cyan().bold()
-    ));
-
-    // Check if npx is available
-    if let Ok(output) = std::process::Command::new("npx").arg("--version").output() {
-        if output.status.success() {
-            let version = String::from_utf8_lossy(&output.stdout);
-            let _ = term.write_line(&format!(
-                "{}{} {}",
-                CHECKMARK,
-                style("npx available:").green(),
-                style(version.trim()).dim()
-            ));
-        } else {
-            let _ = term.write_line(&format!(
-                "{}{}",
-                CROSS_MARK,
-                style("npx command failed").red()
-            ));
-            return Err(GleanMcpError::Config("npx not available".to_string()));
-        }
-    } else {
-        let _ = term.write_line(&format!("{}{}", CROSS_MARK, style("npx not found").red()));
-        let _ = term.write_line(
-            &style("Please install Node.js and npm to use MCP Inspector")
-                .yellow()
-                .to_string(),
-        );
-        return Err(GleanMcpError::Config("npx not found".to_string()));
-    }
-
-    // Check if MCP Inspector package is available
-    let _ = term.write_line(&format!(
-        "{}{}",
-        MAGNIFYING_GLASS,
-        style("Checking MCP Inspector availability...").cyan()
-    ));
-    match std::process::Command::new("npx")
-        .args(["@modelcontextprotocol/inspector", "--help"])
-        .output()
-    {
-        Ok(output) => {
-            if output.status.success() {
-                let _ = term.write_line(&format!(
-                    "{}{}",
-                    CHECKMARK,
-                    style("MCP Inspector available").green()
-                ));
-            } else {
-                let _ = term.write_line(&format!(
-                    "{}{}",
-                    WARNING,
-                    style("MCP Inspector may need to be installed").yellow()
-                ));
-                let _ = term.write_line(&format!(
-                    "  {}: {}",
-                    style("Run").bold(),
-                    style("npx @modelcontextprotocol/inspector --help").cyan()
-                ));
-            }
-        }
-        Err(_) => {
-            let _ = term.write_line(&format!(
-                "{}{}",
-                WARNING,
-                style("Could not check MCP Inspector").yellow()
-            ));
-        }
-    }
-
-    let _ = term.write_line("");
-    let _ = term.write_line(&format!(
-        "🎯 {}",
-        style("Prerequisites check completed!").green().bold()
-    ));
-    let _ = term.write_line(&format!(
-        "💡 {}: {}",
-        style("Next step").bold(),
-        style("glean-mcp-test inspect").cyan()
-    ));
-
-    Ok(())
 }
 
 async fn check_prerequisites_with_progress() -> Result<()> {

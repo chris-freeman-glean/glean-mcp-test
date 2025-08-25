@@ -117,6 +117,7 @@ pub struct ToolInfo {
 }
 
 impl AllToolsTestResult {
+    #[must_use]
     pub fn format_output(&self, format: &str, verbose: bool, debug: bool) -> String {
         match format {
             "json" => self.format_json(),
@@ -149,7 +150,7 @@ impl AllToolsTestResult {
         // Header with overall status
         output.push_str("🧪 Glean MCP Tools Test Results\n");
         output.push_str("=".repeat(50).as_str());
-        output.push_str("\n");
+        output.push('\n');
         output.push_str(&format!(
             "📊 Overall Status: {}\n",
             if self.success {
@@ -165,53 +166,51 @@ impl AllToolsTestResult {
 
         if self.total_tools > 0 {
             let success_rate = (self.successful_tools * 100) / self.total_tools;
-            output.push_str(&format!("📈 Success Rate: {}%\n", success_rate));
+            output.push_str(&format!("📈 Success Rate: {success_rate}%\n"));
         }
 
         // Individual tool results
         output.push_str("\n📋 Individual Tool Results:\n");
         output.push_str("-".repeat(30).as_str());
-        output.push_str("\n");
+        output.push('\n');
 
         for (tool_name, result) in &self.tool_results {
             let status = if result.success { "✅" } else { "❌" };
             let duration = format!("{:.2}s", result.response_time_ms as f64 / 1000.0);
-            output.push_str(&format!("  {} {} ({})\n", status, tool_name, duration));
+            output.push_str(&format!("  {status} {tool_name} ({duration})\n"));
 
             if verbose {
                 output.push_str(&format!("    Query: \"{}\"\n", result.test_query));
                 if !result.success {
                     if let Some(error) = &result.error_message {
-                        output.push_str(&format!("    Error: {}\n", error));
+                        output.push_str(&format!("    Error: {error}\n"));
                     }
                 } else if let Some(validation) = &result.validation_details {
-                    output.push_str(&format!("    Validation: {}\n", validation));
+                    output.push_str(&format!("    Validation: {validation}\n"));
                 }
 
                 // Show full response data only in debug mode
-                if debug {
-                    if let Some(response_data) = &result.response_data {
-                        let response_str = serde_json::to_string_pretty(response_data)
-                            .unwrap_or_else(|_| response_data.to_string());
-                        output.push_str(&format!(
-                            "    Response Data:\n{}\n",
-                            response_str
-                                .lines()
-                                .map(|line| format!("      {}", line))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        ));
-                    }
+                if debug && let Some(response_data) = &result.response_data {
+                    let response_str = serde_json::to_string_pretty(response_data)
+                        .unwrap_or_else(|_| response_data.to_string());
+                    output.push_str(&format!(
+                        "    Response Data:\n{}\n",
+                        response_str
+                            .lines()
+                            .map(|line| format!("      {line}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ));
                 }
 
-                output.push_str("\n");
+                output.push('\n');
             }
         }
 
         // Execution summary
-        output.push_str(&format!("\n⏱️  Execution Summary:\n"));
+        output.push_str("\n⏱️  Execution Summary:\n");
         output.push_str("-".repeat(20).as_str());
-        output.push_str("\n");
+        output.push('\n');
         output.push_str(&format!(
             "   Total time: {:.2}s\n",
             self.execution_summary.total_duration_ms as f64 / 1000.0
@@ -230,7 +229,49 @@ impl AllToolsTestResult {
         ));
 
         if let Some(error) = &self.error {
-            output.push_str(&format!("\n⚠️  Global Error: {}\n", error));
+            output.push_str(&format!("\n⚠️  Global Error: {error}\n"));
+        }
+
+        // Detailed error section for failed tests (always shown, not just in verbose mode)
+        let failed_tools: Vec<_> = self
+            .tool_results
+            .iter()
+            .filter(|(_, result)| !result.success)
+            .collect();
+
+        if !failed_tools.is_empty() {
+            output.push_str("\n🚨 Detailed Error Reports:\n");
+            output.push_str("=".repeat(50).as_str());
+            output.push_str("\n");
+
+            for (tool_name, result) in failed_tools {
+                output.push_str(&format!("\n❌ {} - FAILED\n", tool_name));
+                output.push_str("-".repeat(30).as_str());
+                output.push_str("\n");
+
+                output.push_str(&format!("🔍 Test Query: \"{}\"\n", result.test_query));
+                output.push_str(&format!(
+                    "⏱️  Duration: {:.2}s\n",
+                    result.response_time_ms as f64 / 1000.0
+                ));
+
+                if let Some(error) = &result.error_message {
+                    output.push_str("💥 Error Message:\n");
+                    // Format error message with proper indentation
+                    let error_lines = error.lines().collect::<Vec<_>>();
+                    for line in error_lines {
+                        output.push_str(&format!("   {}\n", line));
+                    }
+                }
+
+                if let Some(validation) = &result.validation_details {
+                    output.push_str("🔬 Validation Details:\n");
+                    let validation_lines = validation.lines().collect::<Vec<_>>();
+                    for line in validation_lines {
+                        output.push_str(&format!("   {}\n", line));
+                    }
+                }
+            }
         }
 
         output
@@ -238,6 +279,7 @@ impl AllToolsTestResult {
 }
 
 impl ToolTestResult {
+    #[must_use]
     pub fn new_success(
         tool_name: String,
         response_time_ms: u64,
@@ -255,7 +297,8 @@ impl ToolTestResult {
         }
     }
 
-    pub fn new_error(
+    #[must_use]
+    pub const fn new_error(
         tool_name: String,
         response_time_ms: u64,
         test_query: String,
@@ -272,6 +315,7 @@ impl ToolTestResult {
         }
     }
 
+    #[must_use]
     pub fn new_timeout(tool_name: String, timeout_seconds: u64, test_query: String) -> Self {
         Self {
             tool_name,
@@ -279,7 +323,7 @@ impl ToolTestResult {
             response_time_ms: timeout_seconds * 1000, // Convert to milliseconds
             test_query,
             response_data: None,
-            error_message: Some(format!("Timeout after {}s", timeout_seconds)),
+            error_message: Some(format!("Timeout after {timeout_seconds}s")),
             validation_details: None,
         }
     }
@@ -288,6 +332,7 @@ impl ToolTestResult {
 pub struct TestQueryGenerator;
 
 impl TestQueryGenerator {
+    #[must_use]
     pub fn generate_test_query(&self, tool_name: &str) -> String {
         match tool_name {
             "search" => "remote work policy".to_string(),
@@ -302,10 +347,11 @@ impl TestQueryGenerator {
             "meeting_lookup" => "weekly standup".to_string(),
             "web_browser" => "https://www.glean.com".to_string(),
             "gemini_web_search" => "latest technology trends".to_string(),
-            _ => format!("test query for {}", tool_name),
+            _ => format!("test query for {tool_name}"),
         }
     }
 
+    #[must_use]
     pub fn get_tool_category(&self, tool_name: &str) -> &'static str {
         match tool_name {
             "search" | "chat" | "read_document" => "core",
@@ -350,7 +396,7 @@ impl GleanMCPInspector {
         }
     }
 
-    /// Test all available MCP tools with clean MultiProgress coordination
+    /// Test all available MCP tools with clean `MultiProgress` coordination
     pub async fn test_all_tools(&self, options: &TestAllOptions) -> Result<AllToolsTestResult> {
         let start_time = Instant::now();
         let start_time_str = chrono::Utc::now().to_rfc3339();
@@ -430,7 +476,7 @@ impl GleanMCPInspector {
         })
     }
 
-    /// Extract tools from the list_available_tools result
+    /// Extract tools from the `list_available_tools` result
     fn extract_tools_from_result(&self, result: &InspectorResult) -> Result<Vec<ToolInfo>> {
         let mut tools = Vec::new();
 
@@ -445,7 +491,7 @@ impl GleanMCPInspector {
                                 description: tool
                                     .get("description")
                                     .and_then(|d| d.as_str())
-                                    .map(|s| s.to_string()),
+                                    .map(std::string::ToString::to_string),
                                 schema: tool.get("inputSchema").cloned(),
                             });
                         }
@@ -460,7 +506,7 @@ impl GleanMCPInspector {
                             description: tool
                                 .get("description")
                                 .and_then(|d| d.as_str())
-                                .map(|s| s.to_string()),
+                                .map(std::string::ToString::to_string),
                             schema: tool.get("inputSchema").cloned(),
                         });
                     }
@@ -553,7 +599,7 @@ impl GleanMCPInspector {
                 .cloned()
                 .collect(),
             tools_list => {
-                let requested_tools: Vec<&str> = tools_list.split(',').map(|s| s.trim()).collect();
+                let requested_tools: Vec<&str> = tools_list.split(',').map(str::trim).collect();
                 available_tools
                     .iter()
                     .filter(|tool| requested_tools.contains(&tool.name.as_str()))
@@ -586,8 +632,7 @@ impl GleanMCPInspector {
                 let pb = multi_progress.add(ProgressBar::new(100));
                 pb.set_style(
                 ProgressStyle::with_template(&format!(
-                    "{{prefix:<{}}} [{{elapsed_precise}}] {{bar:25.cyan/blue}} {{pos:>3}}% {{msg}}",
-                    prefix_width
+                    "{{prefix:<{prefix_width}}} [{{elapsed_precise}}] {{bar:25.cyan/blue}} {{pos:>3}}% {{msg}}"
                 ))
                 .unwrap_or_else(|_| ProgressStyle::default_bar()),
             );
@@ -632,7 +677,7 @@ impl GleanMCPInspector {
 
                 let response_time_ms = start_time.elapsed().as_millis() as u64;
 
-                let test_result = match result {
+                match result {
                     Ok(response_data) => {
                         tool_pb.set_position(100);
                         tool_pb.finish_with_message(format!(
@@ -660,9 +705,7 @@ impl GleanMCPInspector {
                             )
                         }
                     }
-                };
-
-                test_result
+                }
             };
 
             tasks.push(task);
@@ -735,7 +778,7 @@ impl GleanMCPInspector {
                 let response_time_ms = start_time.elapsed().as_millis() as u64;
                 pb_clone.inc(1);
 
-                let test_result = match result {
+                match result {
                     Ok(response_data) => ToolTestResult::new_success(
                         tool.name,
                         response_time_ms,
@@ -754,8 +797,7 @@ impl GleanMCPInspector {
                             )
                         }
                     }
-                };
-                test_result
+                }
             };
 
             tasks.push(task);
@@ -1056,7 +1098,7 @@ impl GleanMCPInspector {
                         {
                             // Timeout message - quiet mode for MultiProgress
                         } else {
-                            let error_msg = Self::truncate_error_message(
+                            let _error_msg = Self::truncate_error_message(
                                 &last_error.as_ref().unwrap().to_string(),
                             );
                             // Error message - quiet mode for MultiProgress
@@ -1101,8 +1143,7 @@ impl GleanMCPInspector {
             }
         });
 
-        let request_body =
-            serde_json::to_string(&tool_request).map_err(|e| GleanMcpError::Json(e))?;
+        let request_body = serde_json::to_string(&tool_request).map_err(GleanMcpError::Json)?;
 
         // Prepare curl command for MCP tool call
         let mut curl_args = vec![
@@ -1122,7 +1163,7 @@ impl GleanMCPInspector {
         // Add auth header if token is available
         let auth_header;
         if let Some(ref token) = auth_token {
-            auth_header = format!("Authorization: Bearer {}", token);
+            auth_header = format!("Authorization: Bearer {token}");
             curl_args.extend_from_slice(&["-H", &auth_header]);
         }
 
@@ -1134,7 +1175,7 @@ impl GleanMCPInspector {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {e}")))?;
 
         let stdout = child
             .stdout
@@ -1169,20 +1210,19 @@ impl GleanMCPInspector {
 
         let (stdout_lines, stderr_lines) = smol::future::zip(stdout_future, stderr_future).await;
         let stdout_lines = stdout_lines
-            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {e}")))?;
         let stderr_lines = stderr_lines
-            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {e}")))?;
 
         let status = child
             .status()
             .await
-            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {e}")))?;
 
         if !status.success() {
             let error_output = stderr_lines.join("\n");
             return Err(GleanMcpError::Process(format!(
-                "MCP tool call failed: {}",
-                error_output
+                "MCP tool call failed: {error_output}"
             )));
         }
 
@@ -1194,10 +1234,7 @@ impl GleanMCPInspector {
                 if let Some(result) = response_json.get("result") {
                     Ok(result.clone())
                 } else if let Some(error) = response_json.get("error") {
-                    Err(GleanMcpError::Process(format!(
-                        "MCP server error: {}",
-                        error
-                    )))
+                    Err(GleanMcpError::Process(format!("MCP server error: {error}")))
                 } else {
                     Ok(response_json)
                 }
@@ -1214,8 +1251,7 @@ impl GleanMCPInspector {
                     || stdout_content.contains("Unauthorized")
                 {
                     Err(GleanMcpError::Process(format!(
-                        "Server error: {}",
-                        stdout_content
+                        "Server error: {stdout_content}"
                     )))
                 } else {
                     Ok(serde_json::json!({
@@ -1264,7 +1300,7 @@ impl GleanMCPInspector {
         pb.set_message("Validating response...");
         pb.inc(1);
 
-        pb.finish_with_message(if result.as_ref().map_or(false, |r| r.success) {
+        pb.finish_with_message(if result.as_ref().is_ok_and(|r| r.success) {
             format!(
                 "{}{}",
                 CHECKMARK,
@@ -1458,7 +1494,7 @@ impl GleanMCPInspector {
         }
     }
 
-    /// List available tools from the MCP server using direct HTTP calls (quiet mode for MultiProgress)
+    /// List available tools from the MCP server using direct HTTP calls (quiet mode for `MultiProgress`)
     pub async fn list_available_tools(&self, debug: bool) -> Result<InspectorResult> {
         // This function runs in quiet mode - no direct terminal output
 
@@ -1575,10 +1611,10 @@ impl GleanMCPInspector {
                 |result| result.get("tools"),
             );
 
-            if let Some(tools_value) = tools {
-                if let Some(_tools_array) = tools_value.as_array() {
-                    // Tool discovery output handled by caller through MultiProgress
-                }
+            if let Some(tools_value) = tools
+                && let Some(_tools_array) = tools_value.as_array()
+            {
+                // Tool discovery output handled by caller through MultiProgress
             }
 
             let mut tool_results = std::collections::HashMap::new();
@@ -1815,6 +1851,7 @@ impl GleanMCPInspector {
 
     /// Validate that Glean-specific tools are present and correctly configured
     /// (This method will be used when we implement full MCP protocol parsing)
+    #[must_use]
     pub fn validate_glean_tools(&self, inspector_data: Value) -> InspectorResult {
         let expected_tools = vec![
             "search",
