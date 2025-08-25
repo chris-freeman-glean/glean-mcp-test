@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use glean_mcp_test::{
     GleanConfig, GleanMcpError, HostController, HostOperationResult, Result,
-    claude_code::ClaudeCodeController, run_list_tools, run_tool_test, run_validation,
+    claude_code::ClaudeCodeController, run_list_tools, run_test_all, run_tool_test, run_validation,
 };
 
 #[derive(Parser)]
@@ -137,13 +137,59 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
+
+    /// Test all available MCP tools and report status
+    TestAll {
+        /// Glean instance name (default: glean-dev)
+        #[arg(short, long, default_value = "glean-dev")]
+        instance: String,
+
+        /// Output format (text, json, summary)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Tools to test (comma-separated list, or 'core'/'enterprise'/'all')
+        #[arg(short, long, default_value = "all")]
+        tools: String,
+
+        /// Test scenario (quick, comprehensive, custom)
+        #[arg(short, long, default_value = "quick")]
+        scenario: String,
+
+        /// Enable parallel testing
+        #[arg(short, long)]
+        parallel: bool,
+
+        /// Maximum concurrent tests when parallel is enabled
+        #[arg(long, default_value = "3")]
+        max_concurrent: usize,
+
+        /// Timeout per tool test in seconds
+        #[arg(long, default_value = "60")]
+        timeout: u64,
+
+        /// Verbose output (show detailed results)
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Output results as JSON (shortcut for --format json)
+        #[arg(long)]
+        json: bool,
+
+        /// Output file path (optional)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
-fn main() -> Result<()> {
+fn main() {
     let cli = Cli::parse();
 
     // For async operations, use smol::block_on
-    smol::block_on(async { handle_command(cli.command).await })
+    if let Err(e) = smol::block_on(async { handle_command(cli.command).await }) {
+        eprintln!("❌ Command failed: {}", e);
+        std::process::exit(1);
+    }
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -156,9 +202,13 @@ async fn handle_command(command: Commands) -> Result<()> {
             match run_validation(Some(&instance)) {
                 Ok(result) => {
                     if format == "json" {
-                        let json_output = serde_json::to_string_pretty(&result)
-                            .map_err(GleanMcpError::Json)?;
-                        println!("{json_output}");
+                        match serde_json::to_string_pretty(&result) {
+                            Ok(json_output) => println!("{}", json_output),
+                            Err(e) => {
+                                eprintln!("❌ Failed to serialize JSON: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
                     } else {
                         print_text_result(&result);
                     }
@@ -184,11 +234,19 @@ async fn handle_command(command: Commands) -> Result<()> {
 
         Commands::Config { verbose } => {
             let config = GleanConfig::default();
+
             if verbose {
-                let config_yaml = serde_yaml::to_string(&config).map_err(|e| {
-                    GleanMcpError::Config(format!("Failed to serialize config: {e}"))
-                })?;
-                println!("📋 Current Configuration:\n{config_yaml}");
+                match serde_yaml::to_string(&config) {
+                    Ok(config_yaml) => {
+                        println!("📋 Current Configuration:\n{}", config_yaml);
+                        println!("\n✅ Configuration displayed successfully!");
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to serialize config: {}", e);
+                        std::process::exit(1);
+                    }
+                }
             } else {
                 println!("📋 Glean Instance: {}", config.glean_instance.name);
                 println!("🔗 Server URL: {}", config.glean_instance.server_url);
@@ -200,11 +258,21 @@ async fn handle_command(command: Commands) -> Result<()> {
                     config.tools_to_test.enterprise_tools.len()
                 );
                 println!("💻 Host Applications: {}", config.host_applications.len());
+                println!("\n✅ Configuration displayed successfully!");
+                std::process::exit(0);
             }
-            Ok(())
         }
 
-        Commands::Prerequisites => check_prerequisites(),
+        Commands::Prerequisites => match check_prerequisites() {
+            Ok(_) => {
+                println!("\n✅ Prerequisites check completed successfully!");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("\n❌ Prerequisites check failed: {}", e);
+                std::process::exit(1);
+            }
+        },
 
         Commands::Auth { instance } => {
             println!("🔐 Testing authentication for Glean instance: {instance}");
@@ -231,7 +299,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                 println!("   export GLEAN_AUTH_TOKEN=your_token_here");
                 println!("\n🔗 For mise users:");
                 println!("   mise set GLEAN_AUTH_TOKEN=your_token_here");
-                return Ok(());
+                std::process::exit(1);
             }
 
             println!("\n🚀 Running authentication test...");
@@ -239,6 +307,7 @@ async fn handle_command(command: Commands) -> Result<()> {
                 Ok(result) => {
                     if result.success {
                         println!("\n✅ Authentication test successful!");
+                        std::process::exit(0);
                     } else {
                         println!("\n❌ Authentication test failed!");
                         if let Some(error) = &result.error {
@@ -252,8 +321,6 @@ async fn handle_command(command: Commands) -> Result<()> {
                     std::process::exit(1);
                 }
             }
-
-            Ok(())
         }
 
         Commands::TestTool {
@@ -362,9 +429,7 @@ async fn handle_command(command: Commands) -> Result<()> {
             query,
             format,
         } => {
-            println!(
-                "🧪 Testing Glean tool '{tool}' on host '{host}' with query: \"{query}\""
-            );
+            println!("🧪 Testing Glean tool '{tool}' on host '{host}' with query: \"{query}\"");
 
             match run_host_operation(&host, "test_tool", "", Some(&tool), Some(&query), &format)
                 .await
@@ -453,6 +518,77 @@ async fn handle_command(command: Commands) -> Result<()> {
                 }
             }
         }
+
+        Commands::TestAll {
+            instance,
+            format,
+            tools,
+            scenario,
+            parallel,
+            max_concurrent,
+            timeout,
+            verbose,
+            json,
+            output,
+        } => {
+            // Determine the actual format to use (--json flag overrides --format)
+            let actual_format = if json {
+                "json".to_string()
+            } else {
+                format.clone()
+            };
+
+            println!("🧪 Testing all available MCP tools");
+            println!("📋 Instance: {}", instance);
+            println!("🔧 Tools filter: {}", tools);
+            println!("📊 Scenario: {}", scenario);
+            println!("⚡ Parallel: {}", parallel);
+
+            if parallel {
+                println!("🚀 Max concurrent: {}", max_concurrent);
+            }
+            println!("⏱️  Timeout per tool: {}s", timeout);
+
+            let test_options = glean_mcp_test::TestAllOptions {
+                tools_filter: tools.clone(),
+                scenario: scenario.clone(),
+                parallel,
+                max_concurrent,
+                timeout,
+                verbose,
+                format: actual_format.clone(),
+            };
+
+            match run_test_all(Some(&instance), &test_options) {
+                Ok(result) => {
+                    let output_content = result.format_output(&actual_format, verbose);
+
+                    if let Some(output_file) = output {
+                        match std::fs::write(&output_file, &output_content) {
+                            Ok(_) => println!("📄 Results written to: {}", output_file),
+                            Err(e) => {
+                                eprintln!("❌ Failed to write output file: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        println!("{}", output_content);
+                    }
+
+                    if result.success {
+                        println!("\n🎉 All tool testing completed successfully!");
+                        std::process::exit(0);
+                    } else {
+                        println!("\n❌ Some tools failed testing!");
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to run test-all: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }
 
@@ -517,7 +653,7 @@ fn check_prerequisites() -> Result<()> {
         }
     }
 
-    println!("\n🎯 Prerequisites check completed!");
+    println!("🎯 Prerequisites check completed!");
     println!("Run 'glean-mcp-test inspect' to test MCP server connection");
 
     Ok(())
@@ -569,8 +705,7 @@ async fn run_host_operation(
 
     // Print result based on format
     if format == "json" {
-        let json_output =
-            serde_json::to_string_pretty(&result).map_err(GleanMcpError::Json)?;
+        let json_output = serde_json::to_string_pretty(&result).map_err(GleanMcpError::Json)?;
         println!("{json_output}");
     } else {
         print_host_result(&result);
