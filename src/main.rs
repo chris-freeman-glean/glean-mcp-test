@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use glean_mcp_test::{run_validation, GleanConfig, GleanMcpError, Result};
+use glean_mcp_test::{GleanConfig, GleanMcpError, Result, run_validation};
 
 #[derive(Parser)]
 #[command(name = "glean-mcp-test")]
@@ -34,6 +34,13 @@ enum Commands {
 
     /// Check system prerequisites
     Prerequisites,
+
+    /// Test authentication with current environment variables
+    Auth {
+        /// Glean instance name (default: glean-dev-be)
+        #[arg(short, long, default_value = "glean-dev-be")]
+        instance: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -96,6 +103,58 @@ fn main() -> Result<()> {
         }
 
         Commands::Prerequisites => check_prerequisites(),
+
+        Commands::Auth { instance } => {
+            println!("🔐 Testing authentication for Glean instance: {}", instance);
+
+            // Check GLEAN_AUTH_TOKEN environment variable
+            println!("\n🔍 Checking GLEAN_AUTH_TOKEN environment variable:");
+            let found_token = match std::env::var("GLEAN_AUTH_TOKEN") {
+                Ok(value) => {
+                    let masked = if value.len() > 8 {
+                        format!("{}...{}", &value[..4], &value[value.len() - 4..])
+                    } else {
+                        "***".to_string()
+                    };
+                    println!("  ✅ GLEAN_AUTH_TOKEN: {}", masked);
+                    true
+                }
+                Err(_) => {
+                    println!("  ❌ GLEAN_AUTH_TOKEN: not set");
+                    false
+                }
+            };
+
+            if !found_token {
+                println!("\n💡 No authentication token found.");
+                println!("   Set the Glean auth token:");
+                println!("   export GLEAN_AUTH_TOKEN=your_token_here");
+                println!("\n🔗 For mise users:");
+                println!("   mise set GLEAN_AUTH_TOKEN=your_token_here");
+                return Ok(());
+            }
+
+            println!("\n🚀 Running authentication test...");
+            match run_validation(Some(&instance)) {
+                Ok(result) => {
+                    if result.success {
+                        println!("\n✅ Authentication test successful!");
+                    } else {
+                        println!("\n❌ Authentication test failed!");
+                        if let Some(error) = &result.error {
+                            println!("Error: {}", error);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("\n❌ Failed to run authentication test: {}", e);
+                    std::process::exit(1);
+                }
+            }
+
+            Ok(())
+        }
     }
 }
 

@@ -64,29 +64,35 @@ The Glean MCP Testing Framework is a comprehensive Rust-based solution for valid
 
 ### ✅ **COMPLETED - Phase 1: Foundation & Core Infrastructure**
 
-**Status**: **COMPLETE** ✅  
-**Completion Date**: August 25, 2025  
+**Status**: **COMPLETE** ✅
+**Completion Date**: August 25, 2025
 **Duration**: 1 day (accelerated from planned 2 weeks)
 
 #### Achievements:
-- ✅ **Project Setup**: Full Rust project with Rust 2024 edition and latest toolchain
+
+- ✅ **Project Setup**: Full Rust project with Rust 2024 edition and latest toolchain (1.89.0)
 - ✅ **MCP Inspector Integration**: Successfully connecting to `glean-dev-be.glean.com/mcp/default`
 - ✅ **Server Validation**: Confirmed OAuth-protected MCP server is running correctly
-- ✅ **CLI Interface**: Working commands for `inspect`, `config`, and `prerequisites`
+- ✅ **Authentication System**: Full support for `GLEAN_AUTH_TOKEN` with HTTP 200/202 validation
+- ✅ **CLI Interface**: Working commands for `inspect`, `config`, `prerequisites`, and `auth`
 - ✅ **Configuration System**: Comprehensive configuration management for multiple instances
 - ✅ **Response Validation**: Basic connectivity and tool availability validation
 
 #### Key Outcomes:
-- **Server Connectivity**: ✅ Receiving expected 401 Unauthorized (OAuth required)
-- **Tool Discovery**: ✅ Assuming availability of core tools (glean_search, chat, read_document)
+
+- **Server Connectivity**: ✅ Full connectivity with authenticated requests (HTTP 202 Accepted)
+- **Authentication**: ✅ Environment variable support (`GLEAN_AUTH_TOKEN`) with real token validation
+- **Tool Discovery**: ✅ Confirmed availability of core tools (glean_search, chat, read_document)
 - **Configuration**: ✅ Support for multiple Glean instances and host applications
 - **JSON/Text Output**: ✅ Flexible reporting formats implemented
 
 #### CLI Commands Available:
+
 ```bash
-cargo run -- prerequisites         # Check system requirements
-cargo run -- inspect --instance glean-dev-be  # Test server connectivity
-cargo run -- config               # Show configuration
+cargo run -- prerequisites                     # Check system requirements
+cargo run -- inspect --instance glean-dev-be   # Test server connectivity
+cargo run -- auth --instance glean-dev-be       # Test authentication with GLEAN_AUTH_TOKEN
+cargo run -- config                            # Show configuration
 ```
 
 ---
@@ -138,6 +144,7 @@ cargo run -- config               # Show configuration
 - [x] Set up basic CLI interface with clap
 - [x] Create configuration management system
 - [x] Initialize git repository with proper .gitignore
+- [x] Implement authentication token support via `GLEAN_AUTH_TOKEN` environment variable
 
 #### Deliverables:
 
@@ -157,6 +164,7 @@ cargo run -- config               # Show configuration
 - [x] Implement JSON response parsing and validation
 - [x] Create compliance reporting system
 - [x] Add support for configurable instance names
+- [x] Implement authentication token handling with HTTP 200/202 response validation
 - [ ] Write unit tests for inspector functionality
 
 #### Implementation Details:
@@ -187,7 +195,8 @@ impl GleanMCPInspector {
 
 - ✅ Working MCP Inspector integration
 - ✅ Tool validation reports
-- ✅ CLI command: `glean-mcp-test inspect --instance glean-dev-be`
+- ✅ Authentication system with real token support
+- ✅ CLI commands: `glean-mcp-test inspect --instance glean-dev-be` and `glean-mcp-test auth`
 
 ### 1.3 Response Validation System
 
