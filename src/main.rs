@@ -18,8 +18,8 @@ struct Cli {
 enum Commands {
     /// Validate Glean MCP server using MCP Inspector
     Inspect {
-        /// Glean instance name (default: glean-dev-be)
-        #[arg(short, long, default_value = "glean-dev-be")]
+        /// Glean instance name (default: glean-dev)
+        #[arg(short, long, default_value = "glean-dev")]
         instance: String,
 
         /// Output format (json, text)
@@ -39,8 +39,8 @@ enum Commands {
 
     /// Test authentication with current environment variables
     Auth {
-        /// Glean instance name (default: glean-dev-be)
-        #[arg(short, long, default_value = "glean-dev-be")]
+        /// Glean instance name (default: glean-dev)
+        #[arg(short, long, default_value = "glean-dev")]
         instance: String,
     },
 
@@ -54,8 +54,8 @@ enum Commands {
         #[arg(short, long)]
         query: String,
 
-        /// Glean instance name (default: glean-dev-be)
-        #[arg(short, long, default_value = "glean-dev-be")]
+        /// Glean instance name (default: glean-dev)
+        #[arg(short, long, default_value = "glean-dev")]
         instance: String,
 
         /// Output format (text, json)
@@ -65,8 +65,8 @@ enum Commands {
 
     /// List available tools from the MCP server
     ListTools {
-        /// Glean instance name (default: glean-dev-be)
-        #[arg(short, long, default_value = "glean-dev-be")]
+        /// Glean instance name (default: glean-dev)
+        #[arg(short, long, default_value = "glean-dev")]
         instance: String,
 
         /// Output format (text, json)

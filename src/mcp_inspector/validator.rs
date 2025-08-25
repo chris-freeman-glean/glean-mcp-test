@@ -42,7 +42,7 @@ pub struct GleanMCPInspector {
 
 impl GleanMCPInspector {
     pub fn new(instance_name: Option<&str>) -> Self {
-        let instance_name = instance_name.unwrap_or("glean-dev-be");
+        let instance_name = instance_name.unwrap_or("glean-dev");
 
         // Read auth token from GLEAN_AUTH_TOKEN environment variable
         let auth_token = std::env::var("GLEAN_AUTH_TOKEN").ok();
@@ -54,7 +54,7 @@ impl GleanMCPInspector {
         }
 
         Self {
-            server_url: format!("https://{}.glean.com/mcp/default", instance_name),
+            server_url: format!("https://{}-be.glean.com/mcp/default", instance_name),
             auth_token,
         }
     }
