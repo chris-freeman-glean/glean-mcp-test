@@ -1,0 +1,130 @@
+---
+globs: *.rs
+---
+
+# Error Handling Patterns
+
+This project uses structured error handling with custom error types and comprehensive error propagation.
+
+## Custom Error Type
+
+Use `GleanMcpError` from [src/lib.rs](mdc:src/lib.rs) for all error handling:
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum GleanMcpError {
+    #[error("MCP Inspector error: {0}")]
+    Inspector(String),
+
+    #[error("Configuration error: {0}")]
+    Config(String),
+
+    #[error("Authentication error: {0}")]
+    Auth(String),
+
+    #[error("Host application error: {0}")]
+    Host(String),
+
+    #[error("Network error: {0}")]
+    Network(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("Process error: {0}")]
+    Process(String),
+}
+
+pub type Result<T> = std::result::Result<T, GleanMcpError>;
+```
+
+## Error Handling Best Practices
+
+### Function Signatures
+
+Always use the project's `Result<T>` type for fallible operations:
+
+```rust
+pub async fn validate_server_with_inspector(&self) -> Result<InspectorResult>
+```
+
+### Error Propagation
+
+Use the `?` operator for error propagation with descriptive context:
+
+```rust
+let child = Command::new("curl")
+    .spawn()
+    .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {}", e)))?;
+```
+
+### Process Error Handling
+
+For async process operations, handle both spawn and execution errors:
+
+```rust
+let status = child
+    .status()
+    .await
+    .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {}", e)))?;
+
+if !status.success() {
+    return Ok(InspectorResult::new_error(format!(
+        "Connection failed: {}",
+        error_output
+    )));
+}
+```
+
+### Result Construction
+
+Use structured result construction for validation outcomes:
+
+```rust
+// Success case
+InspectorResult::new_success(tool_validation, inspector_data)
+
+// Error case
+InspectorResult::new_error(format!("HTTP {}: {}", code, error_output))
+```
+
+### CLI Error Handling
+
+In CLI contexts, provide user-friendly error messages and appropriate exit codes:
+
+```rust
+match run_validation(Some(&instance)) {
+    Ok(result) => {
+        if result.success {
+            std::process::exit(0);
+        } else {
+            println!("❌ Validation failed!");
+            if let Some(error) = &result.error {
+                println!("Error: {}", error);
+            }
+            std::process::exit(1);
+        }
+    }
+    Err(e) => {
+        eprintln!("❌ Failed to run MCP Inspector: {}", e);
+        std::process::exit(1);
+    }
+}
+```
+
+## Error Categories
+
+- **Inspector**: MCP protocol and tool validation errors
+- **Config**: Configuration file and instance setup errors
+- **Auth**: Authentication and authorization failures
+- **Host**: Host application integration errors
+- **Network**: Connection and HTTP request failures
+- **Validation**: Data validation and schema errors
+- **Process**: External process execution errors
+- **Io/Json**: Standard library errors (auto-converted)

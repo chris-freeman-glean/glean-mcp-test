@@ -1,0 +1,199 @@
+---
+globs: src/main.rs
+---
+
+# CLI Patterns and User Experience
+
+This project provides a comprehensive CLI interface for MCP testing with structured output and user-friendly messaging.
+
+## CLI Architecture
+
+The CLI is built using `clap` with derive macros in [src/main.rs](mdc:src/main.rs):
+
+```rust
+#[derive(Parser)]
+#[command(name = "glean-mcp-test")]
+#[command(about = "Glean MCP Testing Framework - Validate Glean's MCP server across host applications")]
+#[command(version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+```
+
+## Available Commands
+
+### 1. Inspect Command
+
+Validate Glean MCP server using MCP Inspector:
+
+```bash
+glean-mcp-test inspect --instance glean-dev-be --format json
+```
+
+Parameters:
+
+- `--instance` / `-i`: Glean instance name (default: glean-dev-be)
+- `--format` / `-o`: Output format (json, text) (default: text)
+
+### 2. Config Command
+
+Show current configuration:
+
+```bash
+glean-mcp-test config --verbose
+```
+
+Parameters:
+
+- `--verbose` / `-v`: Show full configuration details
+
+### 3. Prerequisites Command
+
+Check system prerequisites:
+
+```bash
+glean-mcp-test prerequisites
+```
+
+## Output Formatting
+
+### Structured Output Preference
+
+Following the user's preference [[memory:3698530]], tools should respond with structured output following a known schema instead of natural language.
+
+### JSON Output Format
+
+When `--format json` is specified, output structured JSON:
+
+```rust
+if format == "json" {
+    let json_output = serde_json::to_string_pretty(&result)
+        .map_err(|e| GleanMcpError::Json(e))?;
+    println!("{}", json_output);
+}
+```
+
+### Text Output Format
+
+For human-readable output, use consistent emoji indicators:
+
+- ✅ Success indicators
+- ❌ Failure indicators
+- 🚀 Action/process indicators
+- 📋 Information indicators
+- 🔍 Discovery/search indicators
+- ⚠️ Warning indicators
+
+## Error Handling and Exit Codes
+
+### Success Scenarios
+
+```rust
+if result.success {
+    println!("🎉 Validation completed successfully!");
+    std::process::exit(0);
+}
+```
+
+### Failure Scenarios
+
+```rust
+if !result.success {
+    println!("❌ Validation failed!");
+    if let Some(error) = &result.error {
+        println!("Error: {}", error);
+    }
+    std::process::exit(1);
+}
+```
+
+### Exception Handling
+
+```rust
+Err(e) => {
+    eprintln!("❌ Failed to run MCP Inspector: {}", e);
+    std::process::exit(1);
+}
+```
+
+## User Experience Patterns
+
+### Progress Indication
+
+Provide clear progress updates:
+
+```rust
+println!("🚀 Starting Glean MCP Inspector validation...");
+println!("📋 Instance: {}", instance);
+println!("🔍 Testing Glean MCP server connection...");
+```
+
+### Validation Results Display
+
+Show detailed validation results:
+
+```rust
+fn print_text_result(result: &InspectorResult) {
+    println!("📊 MCP Inspector Results:");
+    println!("Status: {}", if result.success { "✅ Success" } else { "❌ Failed" });
+
+    if let Some(tool_results) = &result.tool_results {
+        println!("🔧 Tool Validation Results:");
+        for (tool, success) in tool_results {
+            let status = if *success { "✅" } else { "❌" };
+            println!("  {} {}", status, tool);
+        }
+    }
+}
+```
+
+### Configuration Display
+
+For config command, show relevant information based on verbosity:
+
+```rust
+if verbose {
+    let config_yaml = serde_yaml::to_string(&config)?;
+    println!("📋 Current Configuration:\n{}", config_yaml);
+} else {
+    println!("📋 Glean Instance: {}", config.glean_instance.name);
+    println!("🔗 Server URL: {}", config.glean_instance.server_url);
+    // ... additional summary info
+}
+```
+
+## Prerequisites Checking
+
+Validate system requirements with clear feedback:
+
+```rust
+fn check_prerequisites() -> Result<()> {
+    println!("🔍 Checking system prerequisites...");
+
+    // Check npx availability
+    match std::process::Command::new("npx").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout);
+            println!("✅ npx available: {}", version.trim());
+        }
+        _ => {
+            println!("❌ npx not found");
+            println!("Please install Node.js and npm to use MCP Inspector");
+            return Err(GleanMcpError::Config("npx not found".to_string()));
+        }
+    }
+
+    println!("🎯 Prerequisites check completed!");
+}
+```
+
+## Future CLI Extensions
+
+The CLI architecture supports future extensions for:
+
+- Host application configuration commands
+- Test scenario execution commands
+- Cross-host testing orchestration
+- Performance monitoring commands
+- Reporting and analysis commands

@@ -1,0 +1,74 @@
+---
+globs: *.rs
+---
+
+# Async Runtime - Smol Usage
+
+This project uses the **smol async runtime** instead of tokio for async operations.
+
+## Key Dependencies
+
+As specified in [Cargo.toml](mdc:Cargo.toml):
+
+- `smol = "2.0.2"` - Main async runtime
+- `async-process = "2.0.0"` - For async process execution
+- `tokio` is included only for specific features (`process`, `rt`) and is optional
+
+## Async Patterns
+
+### Process Execution
+
+Use `async_process::Command` instead of `std::process::Command` for async operations:
+
+```rust
+use async_process::Command;
+use smol::io::{AsyncBufReadExt, BufReader};
+
+let mut child = Command::new("curl")
+    .args(&[...])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()?;
+```
+
+### Stream Processing
+
+Use smol's stream utilities for async iteration:
+
+```rust
+use smol::stream::StreamExt;
+use smol::io::{AsyncBufReadExt, BufReader};
+
+let mut line_reader = reader.lines();
+while let Some(line) = line_reader.next().await.transpose()? {
+    // Process line
+}
+```
+
+### Concurrent Operations
+
+Use `smol::future::zip` for concurrent async operations:
+
+```rust
+let (result1, result2) = smol::future::zip(future1, future2).await;
+```
+
+### Runtime Execution
+
+Use `smol::block_on` for executing async code from sync contexts:
+
+```rust
+pub fn run_validation(instance_name: Option<&str>) -> Result<InspectorResult> {
+    smol::block_on(async {
+        let inspector = GleanMCPInspector::new(instance_name);
+        inspector.validate_server_with_inspector().await
+    })
+}
+```
+
+## Best Practices
+
+- Prefer smol utilities over tokio equivalents
+- Use async/await consistently throughout async functions
+- Handle errors properly in async contexts using the `?` operator
+- Use structured concurrency patterns with proper error propagation

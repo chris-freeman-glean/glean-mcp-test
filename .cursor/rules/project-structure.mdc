@@ -1,0 +1,40 @@
+---
+alwaysApply: true
+---
+
+# Glean MCP Testing Framework - Project Structure
+
+This is a Rust-based testing framework for validating Glean's MCP (Model Context Protocol) server functionality across multiple host applications.
+
+## Project Entry Points
+
+The main entry point is [src/main.rs](mdc:src/main.rs), which provides a CLI interface with the following commands:
+
+- `inspect` - Validate Glean MCP server using MCP Inspector
+- `config` - Show current configuration
+- `prerequisites` - Check system prerequisites
+
+The library code is organized in [src/lib.rs](mdc:src/lib.rs) which re-exports core modules.
+
+## Key Modules
+
+- **MCP Inspector**: [src/mcp_inspector/](mdc:src/mcp_inspector/) - Handles MCP server validation and tool discovery
+- **Configuration**: [src/utils/config.rs](mdc:src/utils/config.rs) - Manages Glean instance and host application configurations
+- **Main Application**: [src/main.rs](mdc:src/main.rs) - CLI interface and command handling
+
+## Configuration Files
+
+- [Cargo.toml](mdc:Cargo.toml) - Project dependencies and Clippy lint configuration
+- [.clippy.toml](mdc:.clippy.toml) - Clippy-specific configuration for code quality
+- [implementation-plan.md](mdc:implementation-plan.md) - Detailed implementation roadmap
+
+## Host Applications Supported
+
+The framework supports testing across multiple MCP host applications:
+
+- Cursor (Bridge authentication via mcp-remote)
+- VS Code (Native OAuth)
+- Claude Desktop (Native OAuth)
+- ChatGPT (Native OAuth)
+- Windsurf (Bridge authentication)
+- And others as specified in the implementation plan

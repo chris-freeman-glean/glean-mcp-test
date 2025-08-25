@@ -1,0 +1,148 @@
+---
+description: Testing frameworks and validation patterns for MCP testing
+---
+
+# Testing and Validation Patterns
+
+This project implements comprehensive testing and validation for MCP server functionality across multiple host applications.
+
+## Validation Architecture
+
+### MCP Inspector Integration
+
+The core validation is handled by `GleanMCPInspector` in [src/mcp_inspector/validator.rs](mdc:src/mcp_inspector/validator.rs):
+
+```rust
+pub struct GleanMCPInspector {
+    server_url: String,
+    inspector_cmd: String,
+}
+```
+
+### Validation Flow
+
+1. **Basic Connectivity**: Test server reachability using curl with SSE headers
+2. **Tool Discovery**: Enumerate available MCP tools
+3. **Schema Validation**: Verify tool schemas match expected Glean tools
+4. **Response Validation**: Check response structure and content
+
+## Expected Server Behavior
+
+### Connectivity Testing
+
+- **Expected Response**: 401 Unauthorized for properly configured servers
+- **Timeout**: 10 seconds for connectivity tests
+- **Headers**: Include `Accept: text/event-stream` for SSE support
+- **User-Agent**: `glean-mcp-test/0.1.0` for identification
+
+### Tool Validation
+
+Core tools that should always be available:
+
+```rust
+let expected_tools = vec!["glean_search", "chat", "read_document"];
+```
+
+Validate tool presence using schema checking:
+
+```rust
+fn validate_tool_schema(&self, tool_name: &str, available_tools: &[Value]) -> bool {
+    available_tools.iter().any(|tool| {
+        tool.get("name")
+            .and_then(|name| name.as_str())
+            .map_or(false, |name| name == tool_name)
+    })
+}
+```
+
+## Test Result Structure
+
+Use structured results for validation outcomes:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectorResult {
+    pub success: bool,
+    pub tool_results: Option<HashMap<String, bool>>,
+    pub inspector_data: Option<Value>,
+    pub error: Option<String>,
+}
+```
+
+## Configuration-Driven Testing
+
+### Test Configuration
+
+Use the configuration system from [src/utils/config.rs](mdc:src/utils/config.rs):
+
+```rust
+pub struct GleanConfig {
+    pub glean_instance: GleanInstance,
+    pub mcp_inspector: McpInspectorConfig,
+    pub tools_to_test: ToolsConfig,
+    pub host_applications: HashMap<String, HostConfig>,
+}
+```
+
+### Instance Management
+
+Support multiple Glean instances for testing:
+
+- **Default**: `glean-dev-be` (development environment)
+- **Configurable**: Via CLI `--instance` parameter
+- **URL Construction**: `https://{instance}.glean.com/mcp/default`
+
+## Prerequisites Validation
+
+Check system prerequisites before running tests:
+
+```rust
+fn check_prerequisites() -> Result<()> {
+    // Check npx availability
+    match std::process::Command::new("npx").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            println!("✅ npx available");
+        }
+        _ => {
+            return Err(GleanMcpError::Config("npx not available".to_string()));
+        }
+    }
+
+    // Check MCP Inspector package availability
+    // ... additional checks
+}
+```
+
+## Output Formatting
+
+Support multiple output formats:
+
+- **Text**: Human-readable with emoji indicators
+- **JSON**: Structured output for programmatic use
+- **Progress**: Real-time status updates during validation
+
+Example text output:
+
+```rust
+fn print_text_result(result: &InspectorResult) {
+    println!("📊 MCP Inspector Results:");
+    println!("Status: {}", if result.success { "✅ Success" } else { "❌ Failed" });
+
+    if let Some(tool_results) = &result.tool_results {
+        println!("🔧 Tool Validation Results:");
+        for (tool, success) in tool_results {
+            let status = if *success { "✅" } else { "❌" };
+            println!("  {} {}", status, tool);
+        }
+    }
+}
+```
+
+## Future Testing Extensions
+
+The framework is designed to support:
+
+- **Host Application Testing**: Automated testing across Cursor, VS Code, Claude Desktop, etc.
+- **Enterprise Scenarios**: Complex workflows using multiple tools
+- **Performance Testing**: Response time and SLA validation
+- **Authentication Testing**: OAuth flows and session management

@@ -1,0 +1,53 @@
+---
+globs: *.rs
+---
+
+# Rust Coding Standards & Linting
+
+This project follows strict Rust coding standards with comprehensive Clippy linting enabled.
+
+## Clippy Configuration
+
+The project uses aggressive linting as defined in [Cargo.toml](mdc:Cargo.toml) and [.clippy.toml](mdc:.clippy.toml):
+
+- **Pedantic, Nursery, Performance, Style, Complexity**: All set to "warn"
+- **Correctness**: Set to "deny" (highest priority)
+- Specific overrides for `too_many_lines`, `missing_errors_doc`, `missing_panics_doc` are allowed
+
+## Key Linting Rules
+
+Run Clippy directly via `cargo clippy` (NOT via custom shell scripts). The project maintains high code quality through:
+
+- Cognitive complexity threshold: 30
+- Type complexity threshold: 250
+- Function arguments threshold: 8
+- Lines per function threshold: 150
+
+## Error Handling Patterns
+
+Use the custom error type `GleanMcpError` defined in [src/lib.rs](mdc:src/lib.rs):
+
+```rust
+pub enum GleanMcpError {
+    Inspector(String),
+    Config(String),
+    Auth(String),
+    Host(String),
+    Network(String),
+    Validation(String),
+    Io(#[from] std::io::Error),
+    Json(#[from] serde_json::Error),
+    Process(String),
+}
+
+pub type Result<T> = std::result::Result<T, GleanMcpError>;
+```
+
+Always use `Result<T>` for fallible operations and provide descriptive error messages.
+
+## Documentation Standards
+
+- Use `//!` for module-level documentation
+- Use `///` for public function documentation
+- Include examples for complex functions
+- Document error conditions and panics where relevant

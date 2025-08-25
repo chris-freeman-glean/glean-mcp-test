@@ -1,0 +1,95 @@
+---
+description: MCP (Model Context Protocol) specific guidance and patterns
+---
+
+# MCP (Model Context Protocol) Specific Guidance
+
+This project implements testing for Glean's MCP server implementation across multiple host applications.
+
+## MCP Protocol Understanding
+
+### Core Glean MCP Tools
+
+The framework tests these core Glean MCP tools (always available):
+
+1. `glean_search` - Search Glean's content index
+2. `chat` - Interact with Glean's AI assistant
+3. `read_document` - Read documents by ID/URL
+
+### Enterprise Tools (Configurable)
+
+Additional enterprise tools that may be available:
+
+- `code_search`, `employee_search`, `gemini_web_search`
+- `gmail_search`, `meeting_lookup`, `outlook_search`, `web_browser`
+
+## Server Endpoints
+
+### Glean MCP Server URLs
+
+- **Default SSE**: `https://{instance}.glean.com/mcp/default/sse`
+- **ChatGPT**: `https://{instance}.glean.com/mcp/chatgpt`
+- **Transport**: Streamable HTTP (Server-Sent Events)
+
+### Authentication Methods
+
+- **Native OAuth**: Direct OAuth 2.0 flow with Glean
+- **Bridge**: Via mcp-remote proxy for applications that don't support native OAuth
+
+## Host Application Integration
+
+### Authentication by Host
+
+- **Cursor**: Bridge authentication via mcp-remote
+- **VS Code**: Native OAuth with streamable-http transport
+- **Claude Desktop**: Native OAuth via claude_desktop_config.json
+- **ChatGPT**: Native OAuth (centrally-managed)
+
+## MCP Inspector Integration
+
+The project uses `@modelcontextprotocol/inspector` npm package for protocol validation:
+
+```rust
+// Basic connectivity test expecting 401 for properly configured servers
+let mut child = Command::new("curl")
+    .args(&[
+        "-H", "Accept: text/event-stream", // SSE header
+        "-H", "User-Agent: glean-mcp-test/0.1.0",
+        &self.server_url,
+    ])
+    .spawn()?;
+```
+
+## Validation Patterns
+
+### Tool Schema Validation
+
+```rust
+fn validate_tool_schema(&self, tool_name: &str, available_tools: &[Value]) -> bool {
+    available_tools.iter().any(|tool| {
+        tool.get("name")
+            .and_then(|name| name.as_str())
+            .map_or(false, |name| name == tool_name)
+    })
+}
+```
+
+### Response Structure
+
+Use structured response format as defined in [src/mcp_inspector/validator.rs](mdc:src/mcp_inspector/validator.rs):
+
+```rust
+pub struct InspectorResult {
+    pub success: bool,
+    pub tool_results: Option<HashMap<String, bool>>,
+    pub inspector_data: Option<Value>,
+    pub error: Option<String>,
+}
+```
+
+## Expected Behavior
+
+- Properly configured Glean servers should return **401 Unauthorized** for unauthenticated requests
+- Tool enumeration should include all core Glean tools
+- Response validation should check for proper JSON structure and required fields
+- Timeout handling for all MCP operations (default: 10 seconds for connectivity tests)

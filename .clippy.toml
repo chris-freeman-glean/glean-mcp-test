@@ -1,0 +1,26 @@
+# Clippy configuration file
+# This file contains additional configuration for Clippy lints
+
+# Allow some common patterns that are acceptable in this project
+cognitive-complexity-threshold = 30
+type-complexity-threshold = 250
+too-many-arguments-threshold = 8
+too-many-lines-threshold = 150
+
+# Avoid false positives for certain patterns
+avoid-breaking-exported-api = false
+
+# Additional configuration for specific lints
+enum-variant-name-threshold = 3
+literal-representation-threshold = 1000
+trivial-copy-size-limit = 128
+pass-by-value-size-limit = 256
+vec-box-size-threshold = 4096
+max-trait-bounds = 3
+max-struct-bools = 3
+max-fn-params-bools = 3
+
+# Allow certain patterns common in async code
+# These are particularly relevant since the project uses smol runtime
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
