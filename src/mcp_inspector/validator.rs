@@ -1,5 +1,8 @@
 use crate::{GleanMcpError, Result};
 use async_process::Command;
+use console::{Emoji, Term, style};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smol::io::{AsyncBufReadExt, BufReader};
@@ -8,6 +11,10 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+// Define emojis for progress messages
+static CHECKMARK: Emoji<'_, '_> = Emoji("✅ ", "[OK] ");
+static MAGNIFYING_GLASS: Emoji<'_, '_> = Emoji("🔍 ", "[SEARCH] ");
 
 /// Async timeout helper function using smol Timer
 async fn async_timeout<T, F>(duration: Duration, future: F) -> Result<T>
@@ -65,7 +72,10 @@ pub struct TestAllOptions {
     pub max_concurrent: usize,
     pub timeout: u64,
     pub verbose: bool,
+    pub debug: bool,
     pub format: String,
+    pub retry_attempts: u32,
+    pub retry_backoff_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,11 +117,11 @@ pub struct ToolInfo {
 }
 
 impl AllToolsTestResult {
-    pub fn format_output(&self, format: &str, verbose: bool) -> String {
+    pub fn format_output(&self, format: &str, verbose: bool, debug: bool) -> String {
         match format {
             "json" => self.format_json(),
             "summary" => self.format_summary(),
-            _ => self.format_text(verbose),
+            _ => self.format_text(verbose, debug),
         }
     }
 
@@ -133,7 +143,7 @@ impl AllToolsTestResult {
         )
     }
 
-    fn format_text(&self, verbose: bool) -> String {
+    fn format_text(&self, verbose: bool, debug: bool) -> String {
         let mut output = String::new();
 
         // Header with overall status
@@ -177,6 +187,23 @@ impl AllToolsTestResult {
                 } else if let Some(validation) = &result.validation_details {
                     output.push_str(&format!("    Validation: {}\n", validation));
                 }
+
+                // Show full response data only in debug mode
+                if debug {
+                    if let Some(response_data) = &result.response_data {
+                        let response_str = serde_json::to_string_pretty(response_data)
+                            .unwrap_or_else(|_| response_data.to_string());
+                        output.push_str(&format!(
+                            "    Response Data:\n{}\n",
+                            response_str
+                                .lines()
+                                .map(|line| format!("      {}", line))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ));
+                    }
+                }
+
                 output.push_str("\n");
             }
         }
@@ -244,6 +271,18 @@ impl ToolTestResult {
             validation_details: None,
         }
     }
+
+    pub fn new_timeout(tool_name: String, timeout_seconds: u64, test_query: String) -> Self {
+        Self {
+            tool_name,
+            success: false,
+            response_time_ms: timeout_seconds * 1000, // Convert to milliseconds
+            test_query,
+            response_data: None,
+            error_message: Some(format!("Timeout after {}s", timeout_seconds)),
+            validation_details: None,
+        }
+    }
 }
 
 pub struct TestQueryGenerator;
@@ -291,10 +330,17 @@ impl GleanMCPInspector {
         // Read auth token from GLEAN_AUTH_TOKEN environment variable
         let auth_token = std::env::var("GLEAN_AUTH_TOKEN").ok();
 
+        let term = Term::stdout();
         if auth_token.is_some() {
-            println!("🔑 Found authentication token in GLEAN_AUTH_TOKEN");
+            let _ = term.write_line(&format!(
+                "🔑 {}",
+                style("Found authentication token in GLEAN_AUTH_TOKEN").green()
+            ));
         } else {
-            println!("ℹ️  No auth token found (set GLEAN_AUTH_TOKEN environment variable)");
+            let _ = term.write_line(&format!(
+                "ℹ️  {}",
+                style("No auth token found (set GLEAN_AUTH_TOKEN environment variable)").dim()
+            ));
         }
 
         Self {
@@ -304,19 +350,25 @@ impl GleanMCPInspector {
         }
     }
 
-    /// Test all available MCP tools and report comprehensive results
+    /// Test all available MCP tools with clean MultiProgress coordination
     pub async fn test_all_tools(&self, options: &TestAllOptions) -> Result<AllToolsTestResult> {
         let start_time = Instant::now();
         let start_time_str = chrono::Utc::now().to_rfc3339();
 
-        println!("🔍 Starting comprehensive tool testing...");
+        // Clean discovery phase
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::with_template("🔍 {spinner} {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+        );
+        spinner.enable_steady_tick(Duration::from_millis(100));
+        spinner.set_message("Discovering available tools...");
 
-        // Step 1: Discover available tools
-        let tools_result = self.list_available_tools().await?;
+        let tools_result = self.list_available_tools(false).await?; // Force quiet mode
         let available_tools = self.extract_tools_from_result(&tools_result)?;
-
-        // Step 2: Filter tools based on options
         let tools_to_test = self.filter_tools(&available_tools, options);
+
+        spinner.finish_with_message(format!("✅ Found {} tools to test", tools_to_test.len()));
 
         if tools_to_test.is_empty() {
             return Ok(AllToolsTestResult {
@@ -336,26 +388,17 @@ impl GleanMCPInspector {
             });
         }
 
-        println!("📋 Found {} tools to test", tools_to_test.len());
-        for tool in &tools_to_test {
-            println!(
-                "  • {} ({})",
-                tool.name,
-                self.query_generator.get_tool_category(&tool.name)
-            );
-        }
-
-        // Step 3: Execute tests
+        // Phase 2: Execute tests with individual progress bars
         let test_results = if options.parallel {
-            println!(
-                "🚀 Running tests in parallel (max {} concurrent)",
-                options.max_concurrent
-            );
-            self.execute_tests_parallel(&tools_to_test, options).await?
-        } else {
-            println!("🔄 Running tests sequentially");
-            self.execute_tests_sequential(&tools_to_test, options)
+            self.execute_tests_parallel_with_individual_progress(&tools_to_test, options)
                 .await?
+        } else {
+            self.execute_tests_sequential_with_progress(
+                &tools_to_test,
+                options,
+                &MultiProgress::new(),
+            )
+            .await?
         };
 
         // Step 4: Generate final result
@@ -427,7 +470,11 @@ impl GleanMCPInspector {
 
         // If no tools found in structured data, fall back to expected tools (core + enterprise)
         if tools.is_empty() {
-            println!("⚠️  No tools found in response, using default tool set");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "⚠️  {}",
+                style("No tools found in response, using default tool set").yellow()
+            ));
             tools = vec![
                 // Core tools
                 ToolInfo {
@@ -516,7 +563,212 @@ impl GleanMCPInspector {
         }
     }
 
-    /// Execute tests in parallel with concurrency limits
+    /// Execute tests in parallel with individual progress bars per tool
+    async fn execute_tests_parallel_with_individual_progress(
+        &self,
+        tools: &[ToolInfo],
+        options: &TestAllOptions,
+    ) -> Result<Vec<ToolTestResult>> {
+        use smol::lock::Semaphore;
+
+        // Create MultiProgress and ensure it owns terminal completely
+        let multi_progress = MultiProgress::new();
+        let semaphore = Arc::new(Semaphore::new(options.max_concurrent));
+
+        // Calculate max tool name length for alignment
+        let max_name_len = tools.iter().map(|t| t.name.len()).max().unwrap_or(10);
+        let prefix_width = max_name_len + 4; // Extra space for emoji
+
+        // Pre-create all progress bars with consistent alignment
+        let progress_bars: Vec<_> = tools
+            .iter()
+            .map(|tool| {
+                let pb = multi_progress.add(ProgressBar::new(100));
+                pb.set_style(
+                ProgressStyle::with_template(&format!(
+                    "{{prefix:<{}}} [{{elapsed_precise}}] {{bar:25.cyan/blue}} {{pos:>3}}% {{msg}}",
+                    prefix_width
+                ))
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+            );
+                pb.set_prefix(format!("🔧 {}", &tool.name));
+                pb.set_message("Queued...");
+                pb.set_position(0);
+                (pb, tool.clone())
+            })
+            .collect();
+
+        // Create tasks for each tool
+        let mut tasks = Vec::new();
+        for (tool_pb, tool) in progress_bars {
+            let semaphore = semaphore.clone();
+            let timeout = Duration::from_secs(options.timeout);
+            let query = self.query_generator.generate_test_query(&tool.name);
+            let server_url = self.server_url.clone();
+            let auth_token = self.auth_token.clone();
+            let retry_attempts = options.retry_attempts;
+            let retry_backoff_seconds = options.retry_backoff_seconds;
+
+            let task = async move {
+                let _permit = semaphore.acquire().await;
+
+                tool_pb.set_message("Starting...");
+                tool_pb.set_position(10);
+
+                let start_time = Instant::now();
+                tool_pb.set_message("Testing...");
+                tool_pb.set_position(50);
+
+                let result = Self::test_tool_with_retry(
+                    server_url,
+                    auth_token,
+                    &tool.name,
+                    &query,
+                    timeout,
+                    retry_attempts,
+                    retry_backoff_seconds,
+                )
+                .await;
+
+                let response_time_ms = start_time.elapsed().as_millis() as u64;
+
+                let test_result = match result {
+                    Ok(response_data) => {
+                        tool_pb.set_position(100);
+                        tool_pb.finish_with_message(format!(
+                            "✅ Complete ({:.2}s)",
+                            response_time_ms as f64 / 1000.0
+                        ));
+                        ToolTestResult::new_success(
+                            tool.name,
+                            response_time_ms,
+                            query,
+                            response_data,
+                        )
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("timed out") {
+                            tool_pb.finish_with_message("⏰ Timeout".to_string());
+                            ToolTestResult::new_timeout(tool.name, timeout.as_secs(), query)
+                        } else {
+                            tool_pb.finish_with_message("❌ Failed".to_string());
+                            ToolTestResult::new_error(
+                                tool.name,
+                                response_time_ms,
+                                query,
+                                e.to_string(),
+                            )
+                        }
+                    }
+                };
+
+                test_result
+            };
+
+            tasks.push(task);
+        }
+
+        // Execute all tests and wait for completion
+        let results = futures::future::join_all(tasks).await;
+
+        // Give a moment for all progress bars to finish cleanly
+        smol::Timer::after(Duration::from_millis(100)).await;
+
+        Ok(results)
+    }
+
+    /// Execute tests in parallel with clean, single progress bar (legacy)
+    async fn execute_tests_parallel_with_progress(
+        &self,
+        tools: &[ToolInfo],
+        options: &TestAllOptions,
+        multi_progress: &MultiProgress,
+    ) -> Result<Vec<ToolTestResult>> {
+        use smol::lock::Semaphore;
+
+        let semaphore = Arc::new(Semaphore::new(options.max_concurrent));
+        let mut tasks = Vec::new();
+
+        // Add a clean progress bar to the existing MultiProgress
+        let pb = multi_progress.add(ProgressBar::new(tools.len() as u64));
+        pb.set_style(
+            ProgressStyle::with_template(
+                "🚀 [{elapsed_precise}] {bar:40.cyan/blue} {pos:>2}/{len:2} {msg}",
+            )
+            .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_message(format!(
+            "Testing {} tools in parallel (max {} concurrent)",
+            tools.len(),
+            options.max_concurrent
+        ));
+
+        for tool in tools {
+            let semaphore = semaphore.clone();
+            let tool = tool.clone();
+            let timeout = Duration::from_secs(options.timeout);
+            let query = self.query_generator.generate_test_query(&tool.name);
+            let pb_clone = pb.clone();
+
+            let server_url = self.server_url.clone();
+            let auth_token = self.auth_token.clone();
+            let retry_attempts = options.retry_attempts;
+            let retry_backoff_seconds = options.retry_backoff_seconds;
+
+            let task = async move {
+                let _permit = semaphore.acquire().await;
+
+                let start_time = Instant::now();
+
+                let result = Self::test_tool_with_retry(
+                    server_url,
+                    auth_token,
+                    &tool.name,
+                    &query,
+                    timeout,
+                    retry_attempts,
+                    retry_backoff_seconds,
+                )
+                .await;
+
+                let response_time_ms = start_time.elapsed().as_millis() as u64;
+                pb_clone.inc(1);
+
+                let test_result = match result {
+                    Ok(response_data) => ToolTestResult::new_success(
+                        tool.name,
+                        response_time_ms,
+                        query,
+                        response_data,
+                    ),
+                    Err(e) => {
+                        if e.to_string().contains("timed out") {
+                            ToolTestResult::new_timeout(tool.name, timeout.as_secs(), query)
+                        } else {
+                            ToolTestResult::new_error(
+                                tool.name,
+                                response_time_ms,
+                                query,
+                                e.to_string(),
+                            )
+                        }
+                    }
+                };
+                test_result
+            };
+
+            tasks.push(task);
+        }
+
+        // Execute all tests concurrently
+        let results = futures::future::join_all(tasks).await;
+        pb.finish_with_message(format!("✅ Completed {} tools", tools.len()));
+
+        Ok(results)
+    }
+
+    /// Execute tests in parallel with concurrency limits (Legacy method)
     async fn execute_tests_parallel(
         &self,
         tools: &[ToolInfo],
@@ -535,16 +787,23 @@ impl GleanMCPInspector {
 
             let server_url = self.server_url.clone();
             let auth_token = self.auth_token.clone();
+            let retry_attempts = options.retry_attempts;
+            let retry_backoff_seconds = options.retry_backoff_seconds;
 
             let task = async move {
                 let _permit = semaphore.acquire().await;
 
-                println!("🔧 Testing tool: {} with query: \"{}\"", tool.name, query);
+                // Verbose output removed for clean MultiProgress display
 
                 let start_time = Instant::now();
-                let result = async_timeout(
+                let result = Self::test_tool_with_retry(
+                    server_url,
+                    auth_token,
+                    &tool.name,
+                    &query,
                     timeout,
-                    Self::test_tool_direct(server_url, auth_token, &tool.name, &query),
+                    retry_attempts,
+                    retry_backoff_seconds,
                 )
                 .await;
 
@@ -552,11 +811,7 @@ impl GleanMCPInspector {
 
                 match result {
                     Ok(response_data) => {
-                        println!(
-                            "  ✅ {} completed ({:.2}s)",
-                            tool.name,
-                            response_time_ms as f64 / 1000.0
-                        );
+                        // Success - quiet mode for MultiProgress
                         ToolTestResult::new_success(
                             tool.name,
                             response_time_ms,
@@ -566,15 +821,8 @@ impl GleanMCPInspector {
                     }
                     Err(e) => {
                         if e.to_string().contains("timed out") {
-                            println!("  ⏰ {} timed out", tool.name);
-                            ToolTestResult::new_error(
-                                tool.name,
-                                response_time_ms,
-                                query,
-                                format!("Timeout after {}s", timeout.as_secs()),
-                            )
+                            ToolTestResult::new_timeout(tool.name, timeout.as_secs(), query)
                         } else {
-                            println!("  ❌ {} failed: {}", tool.name, e);
                             ToolTestResult::new_error(
                                 tool.name,
                                 response_time_ms,
@@ -594,7 +842,81 @@ impl GleanMCPInspector {
         Ok(results)
     }
 
-    /// Execute tests sequentially
+    /// Execute tests sequentially with progress bar (Phase 2)
+    async fn execute_tests_sequential_with_progress(
+        &self,
+        tools: &[ToolInfo],
+        options: &TestAllOptions,
+        multi_progress: &MultiProgress,
+    ) -> Result<Vec<ToolTestResult>> {
+        let mut results = Vec::new();
+        let timeout = Duration::from_secs(options.timeout);
+
+        // Add progress bar to the existing MultiProgress
+        let pb = multi_progress.add(ProgressBar::new(tools.len() as u64));
+        pb.set_style(
+            ProgressStyle::with_template(
+                "⚡ [{elapsed_precise}] {bar:40.cyan/blue} {pos:>2}/{len:2} {msg}",
+            )
+            .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_message("Testing tools sequentially...");
+
+        for tool in tools {
+            let query = self.query_generator.generate_test_query(&tool.name);
+
+            pb.set_message(format!("Testing {}", &tool.name));
+
+            let start_time = Instant::now();
+            let result = Self::test_tool_with_retry(
+                self.server_url.clone(),
+                self.auth_token.clone(),
+                &tool.name,
+                &query,
+                timeout,
+                options.retry_attempts,
+                options.retry_backoff_seconds,
+            )
+            .await;
+
+            let response_time_ms = start_time.elapsed().as_millis() as u64;
+
+            let test_result = match result {
+                Ok(response_data) => ToolTestResult::new_success(
+                    tool.name.clone(),
+                    response_time_ms,
+                    query,
+                    response_data,
+                ),
+                Err(e) => {
+                    if e.to_string().contains("timed out") {
+                        ToolTestResult::new_error(
+                            tool.name.clone(),
+                            response_time_ms,
+                            query,
+                            format!("Timeout after {}s", timeout.as_secs()),
+                        )
+                    } else {
+                        ToolTestResult::new_error(
+                            tool.name.clone(),
+                            response_time_ms,
+                            query,
+                            e.to_string(),
+                        )
+                    }
+                }
+            };
+
+            results.push(test_result);
+            pb.inc(1);
+        }
+
+        pb.finish_with_message(format!("✅ Completed {} tools", tools.len()));
+        Ok(results)
+    }
+
+    /// Execute tests sequentially (Legacy method)
     async fn execute_tests_sequential(
         &self,
         tools: &[ToolInfo],
@@ -605,17 +927,19 @@ impl GleanMCPInspector {
 
         for tool in tools {
             let query = self.query_generator.generate_test_query(&tool.name);
-            println!("🔧 Testing tool: {} with query: \"{}\"", tool.name, query);
+            if options.verbose || options.debug {
+                println!("🔧 Testing tool: {} with query: \"{}\"", tool.name, query);
+            }
 
             let start_time = Instant::now();
-            let result = async_timeout(
+            let result = Self::test_tool_with_retry(
+                self.server_url.clone(),
+                self.auth_token.clone(),
+                &tool.name,
+                &query,
                 timeout,
-                Self::test_tool_direct(
-                    self.server_url.clone(),
-                    self.auth_token.clone(),
-                    &tool.name,
-                    &query,
-                ),
+                options.retry_attempts,
+                options.retry_backoff_seconds,
             )
             .await;
 
@@ -645,7 +969,8 @@ impl GleanMCPInspector {
                             format!("Timeout after {}s", timeout.as_secs()),
                         )
                     } else {
-                        println!("  ❌ {} failed: {}", tool.name, e);
+                        let error_msg = Self::truncate_error_message(&e.to_string());
+                        println!("  ❌ {} failed: {}", tool.name, error_msg);
                         ToolTestResult::new_error(
                             tool.name.clone(),
                             response_time_ms,
@@ -660,6 +985,90 @@ impl GleanMCPInspector {
         }
 
         Ok(results)
+    }
+
+    /// Truncate long error messages for cleaner output
+    fn truncate_error_message(error: &str) -> String {
+        const MAX_ERROR_LENGTH: usize = 150;
+
+        // Remove HTML content if present
+        let cleaned = if error.contains("<html>") || error.contains("<!DOCTYPE") {
+            "Server error (HTML response)"
+        } else if error.contains("502 Server Error") {
+            "Server error (502)"
+        } else if error.contains("500 Server Error") {
+            "Server error (500)"
+        } else if error.contains("503 Server Error") {
+            "Server error (503)"
+        } else if error.len() > MAX_ERROR_LENGTH {
+            &error[..MAX_ERROR_LENGTH]
+        } else {
+            error
+        };
+
+        cleaned.trim().to_string()
+    }
+
+    /// Test a tool with retry logic and exponential backoff
+    async fn test_tool_with_retry(
+        server_url: String,
+        auth_token: Option<String>,
+        tool_name: &str,
+        query: &str,
+        timeout: Duration,
+        retry_attempts: u32,
+        initial_backoff_seconds: u64,
+    ) -> std::result::Result<Value, GleanMcpError> {
+        let mut last_error = None;
+
+        for attempt in 1..=retry_attempts {
+            if attempt > 1 {
+                // Calculate exponential backoff base time
+                let base_backoff_ms = initial_backoff_seconds * 1000 * 2_u64.pow(attempt - 2);
+
+                // Add full jitter: random between 0 and base_backoff_ms
+                let mut rng = rand::thread_rng();
+                let jittered_backoff_ms = rng.gen_range(0..=base_backoff_ms);
+                let backoff_duration = Duration::from_millis(jittered_backoff_ms);
+
+                // Retry message suppressed for clean MultiProgress display
+                smol::Timer::after(backoff_duration).await;
+            }
+
+            match async_timeout(
+                timeout,
+                Self::test_tool_direct(server_url.clone(), auth_token.clone(), tool_name, query),
+            )
+            .await
+            {
+                Ok(result) => {
+                    // Recovery message suppressed for clean MultiProgress display
+                    return Ok(result);
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < retry_attempts {
+                        if last_error
+                            .as_ref()
+                            .unwrap()
+                            .to_string()
+                            .contains("timed out")
+                        {
+                            // Timeout message - quiet mode for MultiProgress
+                        } else {
+                            let error_msg = Self::truncate_error_message(
+                                &last_error.as_ref().unwrap().to_string(),
+                            );
+                            // Error message - quiet mode for MultiProgress
+                        }
+                    }
+                }
+            }
+        }
+
+        // All attempts failed
+        Err(last_error
+            .unwrap_or_else(|| GleanMcpError::Process("All retry attempts failed".to_string())))
     }
 
     /// Direct tool testing method (static to avoid borrowing issues in async contexts)
@@ -825,11 +1234,47 @@ impl GleanMCPInspector {
     /// 2. Validate basic connectivity
     /// 3. Report on core tool availability (assumed for now)
     pub async fn validate_server_with_inspector(&self) -> Result<InspectorResult> {
-        println!("🔍 Testing Glean MCP server connection...");
-        println!("📍 Server: {}", self.server_url);
+        let term = Term::stdout();
+        let _ = term.write_line(&format!(
+            "{}{}",
+            MAGNIFYING_GLASS,
+            style("Testing Glean MCP server connection...")
+                .cyan()
+                .bold()
+        ));
+        let _ = term.write_line(&format!("📍 Server: {}", style(&self.server_url).dim()));
+
+        // Create progress bar for validation steps
+        let pb = ProgressBar::new(3);
+        pb.set_style(
+            ProgressStyle::with_template(
+                "{spinner:.green} [{elapsed_precise}] {bar:40.cyan/blue} {pos:>1}/{len:1} {msg}",
+            )
+            .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        pb.enable_steady_tick(Duration::from_millis(100));
+
+        pb.set_message("Checking server connectivity...");
+        pb.inc(1);
 
         // Use basic connectivity test instead of interactive MCP Inspector
-        self.test_basic_connectivity().await
+        let result = self.test_basic_connectivity().await;
+        pb.inc(1);
+
+        pb.set_message("Validating response...");
+        pb.inc(1);
+
+        pb.finish_with_message(if result.as_ref().map_or(false, |r| r.success) {
+            format!(
+                "{}{}",
+                CHECKMARK,
+                style("Server validation complete").green()
+            )
+        } else {
+            style("❌ Server validation failed").red().to_string()
+        });
+
+        result
     }
 
     /// Test a specific MCP tool using direct HTTP MCP protocol calls
@@ -1013,10 +1458,9 @@ impl GleanMCPInspector {
         }
     }
 
-    /// List available tools from the MCP server using direct HTTP calls
-    pub async fn list_available_tools(&self) -> Result<InspectorResult> {
-        println!("🔍 Listing available tools from MCP server...");
-        println!("📍 Server: {}", self.server_url);
+    /// List available tools from the MCP server using direct HTTP calls (quiet mode for MultiProgress)
+    pub async fn list_available_tools(&self, debug: bool) -> Result<InspectorResult> {
+        // This function runs in quiet mode - no direct terminal output
 
         // Create MCP JSON-RPC request to list tools
         let list_request = serde_json::json!({
@@ -1048,9 +1492,7 @@ impl GleanMCPInspector {
         if let Some(ref token) = self.auth_token {
             auth_header = format!("Authorization: Bearer {token}");
             curl_args.extend_from_slice(&["-H", &auth_header]);
-            println!("🔐 Using authentication token for tool listing");
-        } else {
-            println!("🔓 Making unauthenticated tool listing request");
+            // Debug output removed
         }
 
         curl_args.push(&self.server_url);
@@ -1115,7 +1557,10 @@ impl GleanMCPInspector {
         }
 
         let stdout_content = stdout_lines.join("\n");
-        println!("📥 MCP Inspector response: {stdout_content}");
+
+        if debug {
+            println!("📥 MCP Inspector response: {stdout_content}");
+        }
 
         // Try to parse the response - MCP Inspector may return different formats
         if let Ok(response_json) = serde_json::from_str::<serde_json::Value>(&stdout_content) {
@@ -1131,19 +1576,9 @@ impl GleanMCPInspector {
             );
 
             if let Some(tools_value) = tools {
-                println!("✅ Available tools discovered:");
-                if let Some(tools_array) = tools_value.as_array() {
-                    for tool in tools_array {
-                        if let Some(name) = tool.get("name") {
-                            println!("  • {name}");
-                            if let Some(description) = tool.get("description") {
-                                println!("    {description}");
-                            }
-                        }
-                    }
+                if let Some(_tools_array) = tools_value.as_array() {
+                    // Tool discovery output handled by caller through MultiProgress
                 }
-            } else {
-                println!("⚠️  Tools listed but in unexpected format");
             }
 
             let mut tool_results = std::collections::HashMap::new();
@@ -1464,7 +1899,7 @@ pub fn run_tool_test(
 pub fn run_list_tools(instance_name: Option<&str>, _format: &str) -> Result<InspectorResult> {
     smol::block_on(async {
         let inspector = GleanMCPInspector::new(instance_name);
-        inspector.list_available_tools().await
+        inspector.list_available_tools(false).await // Never debug for list-tools command
     })
 }
 

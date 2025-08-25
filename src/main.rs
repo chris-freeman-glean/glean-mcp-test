@@ -1,8 +1,22 @@
 use clap::{Parser, Subcommand};
+use console::{Emoji, Term, style};
 use glean_mcp_test::{
     GleanConfig, GleanMcpError, HostController, HostOperationResult, Result,
     claude_code::ClaudeCodeController, run_list_tools, run_test_all, run_tool_test, run_validation,
 };
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
+
+// Define consistent emojis with fallbacks
+static ROCKET: Emoji<'_, '_> = Emoji("🚀 ", ">> ");
+static CHECKMARK: Emoji<'_, '_> = Emoji("✅ ", "[OK] ");
+static CROSS_MARK: Emoji<'_, '_> = Emoji("❌ ", "[FAIL] ");
+static MAGNIFYING_GLASS: Emoji<'_, '_> = Emoji("🔍 ", "[SEARCH] ");
+static CLIPBOARD: Emoji<'_, '_> = Emoji("📋 ", "[INFO] ");
+static GEAR: Emoji<'_, '_> = Emoji("🔧 ", "[TOOL] ");
+static LOCK: Emoji<'_, '_> = Emoji("🔐 ", "[AUTH] ");
+static PARTY: Emoji<'_, '_> = Emoji("🎉 ", "[SUCCESS] ");
+static WARNING: Emoji<'_, '_> = Emoji("⚠️ ", "[WARN] ");
 
 #[derive(Parser)]
 #[command(name = "glean-mcp-test")]
@@ -172,6 +186,18 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
 
+        /// Debug output (show full tool response data)
+        #[arg(short, long)]
+        debug: bool,
+
+        /// Number of retry attempts for failed tests (default: 4)
+        #[arg(long, default_value = "4")]
+        retry_attempts: u32,
+
+        /// Initial backoff time in seconds for retries with jitter (default: 5)
+        #[arg(long, default_value = "5")]
+        retry_backoff: u64,
+
         /// Output results as JSON (shortcut for --format json)
         #[arg(long)]
         json: bool,
@@ -187,7 +213,12 @@ fn main() {
 
     // For async operations, use smol::block_on
     if let Err(e) = smol::block_on(async { handle_command(cli.command).await }) {
-        eprintln!("❌ Command failed: {}", e);
+        let term = Term::stderr();
+        let _ = term.write_line(&format!(
+            "{}{}",
+            CROSS_MARK,
+            style(format!("Command failed: {}", e)).red().bold()
+        ));
         std::process::exit(1);
     }
 }
@@ -196,8 +227,20 @@ fn main() {
 async fn handle_command(command: Commands) -> Result<()> {
     match command {
         Commands::Inspect { instance, format } => {
-            println!("🚀 Starting Glean MCP Inspector validation...");
-            println!("📋 Instance: {instance}");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "{}{}",
+                ROCKET,
+                style("Starting Glean MCP Inspector validation...")
+                    .cyan()
+                    .bold()
+            ));
+            let _ = term.write_line(&format!(
+                "{}{} {}",
+                CLIPBOARD,
+                style("Instance:").bold(),
+                style(&instance).cyan()
+            ));
 
             match run_validation(Some(&instance)) {
                 Ok(result) => {
@@ -205,28 +248,50 @@ async fn handle_command(command: Commands) -> Result<()> {
                         match serde_json::to_string_pretty(&result) {
                             Ok(json_output) => println!("{}", json_output),
                             Err(e) => {
-                                eprintln!("❌ Failed to serialize JSON: {}", e);
+                                let _ = term.write_line(&format!(
+                                    "{}{}",
+                                    CROSS_MARK,
+                                    style(format!("Failed to serialize JSON: {}", e)).red()
+                                ));
                                 std::process::exit(1);
                             }
                         }
                     } else {
-                        print_text_result(&result);
+                        print_enhanced_text_result(&result);
                     }
 
                     if result.success {
-                        println!("\n🎉 Validation completed successfully!");
-                        println!("🚀 Ready to proceed to host application testing");
+                        let _ = term.write_line("");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            PARTY,
+                            style("Validation completed successfully!").green().bold()
+                        ));
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            ROCKET,
+                            style("Ready to proceed to host application testing").blue()
+                        ));
                         std::process::exit(0);
                     } else {
-                        println!("\n❌ Validation failed!");
+                        let _ = term.write_line("");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style("Validation failed!").red().bold()
+                        ));
                         if let Some(error) = &result.error {
-                            println!("Error: {error}");
+                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to run MCP Inspector: {e}");
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to run MCP Inspector: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
@@ -235,50 +300,137 @@ async fn handle_command(command: Commands) -> Result<()> {
         Commands::Config { verbose } => {
             let config = GleanConfig::default();
 
+            let term = Term::stdout();
+
             if verbose {
                 match serde_yaml::to_string(&config) {
                     Ok(config_yaml) => {
-                        println!("📋 Current Configuration:\n{}", config_yaml);
-                        println!("\n✅ Configuration displayed successfully!");
+                        let _ = term.write_line(&format!(
+                            "📋 {}\n{}",
+                            style("Current Configuration:").bold().underlined(),
+                            config_yaml
+                        ));
+                        let _ = term.write_line("");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CHECKMARK,
+                            style("Configuration displayed successfully!")
+                                .green()
+                                .bold()
+                        ));
                         std::process::exit(0);
                     }
                     Err(e) => {
-                        eprintln!("❌ Failed to serialize config: {}", e);
+                        let term = Term::stderr();
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style(format!("Failed to serialize config: {}", e)).red()
+                        ));
                         std::process::exit(1);
                     }
                 }
             } else {
-                println!("📋 Glean Instance: {}", config.glean_instance.name);
-                println!("🔗 Server URL: {}", config.glean_instance.server_url);
-                println!("🔧 Inspector Package: {}", config.mcp_inspector.package);
-                println!("🔑 Auth Method: {}", config.authentication.method);
-                println!("📊 Core Tools: {}", config.tools_to_test.core_tools.len());
-                println!(
-                    "🏢 Enterprise Tools: {}",
-                    config.tools_to_test.enterprise_tools.len()
-                );
-                println!("💻 Host Applications: {}", config.host_applications.len());
-                println!("\n✅ Configuration displayed successfully!");
+                let _ = term.write_line(&format!(
+                    "📋 {}: {}",
+                    style("Glean Instance").bold(),
+                    style(&config.glean_instance.name).cyan()
+                ));
+                let _ = term.write_line(&format!(
+                    "🔗 {}: {}",
+                    style("Server URL").bold(),
+                    style(&config.glean_instance.server_url).dim()
+                ));
+                let _ = term.write_line(&format!(
+                    "🔧 {}: {}",
+                    style("Inspector Package").bold(),
+                    style(&config.mcp_inspector.package).cyan()
+                ));
+                let _ = term.write_line(&format!(
+                    "🔑 {}: {}",
+                    style("Auth Method").bold(),
+                    style(&config.authentication.method).cyan()
+                ));
+                let _ = term.write_line(&format!(
+                    "📊 {}: {}",
+                    style("Core Tools").bold(),
+                    style(config.tools_to_test.core_tools.len().to_string()).cyan()
+                ));
+                let _ = term.write_line(&format!(
+                    "🏢 {}: {}",
+                    style("Enterprise Tools").bold(),
+                    style(config.tools_to_test.enterprise_tools.len().to_string()).cyan()
+                ));
+                let _ = term.write_line(&format!(
+                    "💻 {}: {}",
+                    style("Host Applications").bold(),
+                    style(config.host_applications.len().to_string()).cyan()
+                ));
+                let _ = term.write_line("");
+                let _ = term.write_line(&format!(
+                    "{}{}",
+                    CHECKMARK,
+                    style("Configuration displayed successfully!")
+                        .green()
+                        .bold()
+                ));
                 std::process::exit(0);
             }
         }
 
-        Commands::Prerequisites => match check_prerequisites() {
+        Commands::Prerequisites => match check_prerequisites_with_progress().await {
             Ok(_) => {
-                println!("\n✅ Prerequisites check completed successfully!");
+                let term = Term::stdout();
+                let _ = term.write_line("");
+                let _ = term.write_line(&format!(
+                    "{}{}",
+                    PARTY,
+                    style("Prerequisites check completed successfully!")
+                        .green()
+                        .bold()
+                ));
                 std::process::exit(0);
             }
             Err(e) => {
-                eprintln!("\n❌ Prerequisites check failed: {}", e);
+                let term = Term::stderr();
+                let _ = term.write_line("");
+                let _ = term.write_line(&format!(
+                    "{}{}",
+                    CROSS_MARK,
+                    style(format!("Prerequisites check failed: {}", e)).red()
+                ));
                 std::process::exit(1);
             }
         },
 
         Commands::Auth { instance } => {
-            println!("🔐 Testing authentication for Glean instance: {instance}");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "{}{} {}",
+                LOCK,
+                style("Testing authentication for Glean instance:")
+                    .cyan()
+                    .bold(),
+                style(&instance).yellow()
+            ));
+
+            // Create progress bar for authentication steps
+            let auth_pb = ProgressBar::new(3);
+            auth_pb.set_style(ProgressStyle::with_template(
+                "{spinner:.green} [{elapsed_precise}] {bar:30.cyan/blue} {pos:>1}/{len:1} {msg}"
+            ).unwrap_or_else(|_| ProgressStyle::default_bar()));
+            auth_pb.enable_steady_tick(Duration::from_millis(100));
+
+            auth_pb.set_message("Checking environment variables...");
 
             // Check GLEAN_AUTH_TOKEN environment variable
-            println!("\n🔍 Checking GLEAN_AUTH_TOKEN environment variable:");
+            let _ = term.write_line("");
+            let _ = term.write_line(&format!(
+                "{}{}",
+                MAGNIFYING_GLASS,
+                style("Checking GLEAN_AUTH_TOKEN environment variable:").bold()
+            ));
+
             #[allow(clippy::option_if_let_else)]
             let found_token = if let Ok(value) = std::env::var("GLEAN_AUTH_TOKEN") {
                 let masked = if value.len() > 8 {
@@ -286,38 +438,97 @@ async fn handle_command(command: Commands) -> Result<()> {
                 } else {
                     "***".to_string()
                 };
-                println!("  ✅ GLEAN_AUTH_TOKEN: {masked}");
+                let _ = term.write_line(&format!(
+                    "  {}{} {}",
+                    CHECKMARK,
+                    style("GLEAN_AUTH_TOKEN:").green(),
+                    style(masked).dim()
+                ));
                 true
             } else {
-                println!("  ❌ GLEAN_AUTH_TOKEN: not set");
+                let _ = term.write_line(&format!(
+                    "  {}{}",
+                    CROSS_MARK,
+                    style("GLEAN_AUTH_TOKEN: not set").red()
+                ));
                 false
             };
+            auth_pb.inc(1);
 
             if !found_token {
-                println!("\n💡 No authentication token found.");
-                println!("   Set the Glean auth token:");
-                println!("   export GLEAN_AUTH_TOKEN=your_token_here");
-                println!("\n🔗 For mise users:");
-                println!("   mise set GLEAN_AUTH_TOKEN=your_token_here");
+                auth_pb.finish_with_message(
+                    style("❌ No authentication token found").red().to_string(),
+                );
+                let _ = term.write_line("");
+                let _ = term.write_line(&format!(
+                    "💡 {}",
+                    style("No authentication token found.").yellow()
+                ));
+                let _ = term.write_line(&format!(
+                    "   {}: {}",
+                    style("Set the Glean auth token").bold(),
+                    style("export GLEAN_AUTH_TOKEN=your_token_here").cyan()
+                ));
+                let _ = term.write_line("");
+                let _ = term.write_line(&format!("🔗 {}", style("For mise users:").bold()));
+                let _ = term.write_line(&format!(
+                    "   {}",
+                    style("mise set GLEAN_AUTH_TOKEN=your_token_here").cyan()
+                ));
                 std::process::exit(1);
             }
 
-            println!("\n🚀 Running authentication test...");
+            auth_pb.set_message("Testing server connection...");
+            auth_pb.inc(1);
+
+            let _ = term.write_line("");
+            let _ = term.write_line(&format!(
+                "{}{}",
+                ROCKET,
+                style("Running authentication test...").cyan()
+            ));
+
             match run_validation(Some(&instance)) {
                 Ok(result) => {
+                    auth_pb.inc(1);
+
                     if result.success {
-                        println!("\n✅ Authentication test successful!");
+                        auth_pb.finish_with_message(format!(
+                            "{}{}",
+                            CHECKMARK,
+                            style("Authentication successful").green()
+                        ));
+                        let _ = term.write_line("");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            PARTY,
+                            style("Authentication test successful!").green().bold()
+                        ));
                         std::process::exit(0);
                     } else {
-                        println!("\n❌ Authentication test failed!");
+                        auth_pb.finish_with_message(
+                            style("❌ Authentication failed").red().to_string(),
+                        );
+                        let _ = term.write_line("");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style("Authentication test failed!").red().bold()
+                        ));
                         if let Some(error) = &result.error {
-                            println!("Error: {error}");
+                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("\n❌ Failed to run authentication test: {e}");
+                    auth_pb
+                        .finish_with_message(style("❌ Test execution failed").red().to_string());
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to run authentication test: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
@@ -329,8 +540,13 @@ async fn handle_command(command: Commands) -> Result<()> {
             instance,
             format,
         } => {
-            println!("🔧 Testing MCP tool: {tool} with query: \"{query}\"");
-            println!("📋 Instance: {instance}");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "🔧 Testing MCP tool: {} with query: \"{}\"",
+                style(&tool).cyan().bold(),
+                style(&query).dim()
+            ));
+            let _ = term.write_line(&format!("📋 Instance: {}", style(&instance).cyan()));
 
             match run_tool_test(&tool, &query, Some(&instance), &format) {
                 Ok(result) => {
@@ -342,35 +558,54 @@ async fn handle_command(command: Commands) -> Result<()> {
                                     .unwrap_or_else(|_| "{}".to_string())
                             );
                         } else {
-                            println!("\n🎉 Tool test completed successfully!");
+                            let _ = term.write_line("");
+                            let _ = term.write_line(&format!(
+                                "{}{}",
+                                PARTY,
+                                style("Tool test completed successfully!").green().bold()
+                            ));
                             if let Some(response_data) = &result.inspector_data {
-                                println!("📄 Response:");
-                                println!(
-                                    "{}",
-                                    serde_json::to_string_pretty(response_data)
-                                        .unwrap_or_else(|_| "No response data".to_string())
-                                );
+                                let _ =
+                                    term.write_line(&format!("📄 {}:", style("Response").bold()));
+                                let response_json = serde_json::to_string_pretty(response_data)
+                                    .unwrap_or_else(|_| "No response data".to_string());
+                                let _ = term.write_line(&response_json);
                             }
                         }
                         std::process::exit(0);
                     } else {
-                        println!("❌ Tool test failed!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style("Tool test failed!").red().bold()
+                        ));
                         if let Some(error) = &result.error {
-                            println!("Error: {error}");
+                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to run tool test: {e}");
+                    let term = Term::stderr();
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to run tool test: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::ListTools { instance, format } => {
-            println!("📋 Listing available tools from MCP server");
-            println!("📋 Instance: {instance}");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "📋 {}",
+                style("Listing available tools from MCP server")
+                    .cyan()
+                    .bold()
+            ));
+            let _ = term.write_line(&format!("📋 Instance: {}", style(&instance).cyan()));
 
             match run_list_tools(Some(&instance), &format) {
                 Ok(result) => {
@@ -382,42 +617,74 @@ async fn handle_command(command: Commands) -> Result<()> {
                                     .unwrap_or_else(|_| "{}".to_string())
                             );
                         } else {
-                            println!("\n🎉 Tools listed successfully!");
+                            let _ = term.write_line("");
+                            let _ = term.write_line(&format!(
+                                "{}{}",
+                                PARTY,
+                                style("Tools listed successfully!").green().bold()
+                            ));
                         }
                         std::process::exit(0);
                     } else {
-                        println!("❌ Failed to list tools!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style("Failed to list tools!").red().bold()
+                        ));
                         if let Some(error) = &result.error {
-                            println!("Error: {error}");
+                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to list tools: {e}");
+                    let term = Term::stderr();
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to list tools: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::VerifyHost { host, format } => {
-            println!("🔍 Verifying MCP servers in host: {host}");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "🔍 Verifying MCP servers in host: {}",
+                style(&host).cyan().bold()
+            ));
 
             match run_host_operation(&host, "verify", "", None, None, &format).await {
                 Ok(result) => {
                     if result.success {
-                        println!("✅ Host verification completed successfully!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CHECKMARK,
+                            style("Host verification completed successfully!")
+                                .green()
+                                .bold()
+                        ));
                         std::process::exit(0);
                     } else {
-                        println!("❌ Host verification failed!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style("Host verification failed!").red().bold()
+                        ));
                         if let Some(error) = &result.error {
-                            println!("Error: {error}");
+                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to verify host: {e}");
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to verify host: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
@@ -429,91 +696,163 @@ async fn handle_command(command: Commands) -> Result<()> {
             query,
             format,
         } => {
-            println!("🧪 Testing Glean tool '{tool}' on host '{host}' with query: \"{query}\"");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "🧪 Testing Glean tool '{}' on host '{}' with query: \"{}\"",
+                style(&tool).cyan(),
+                style(&host).cyan(),
+                style(&query).dim()
+            ));
 
             match run_host_operation(&host, "test_tool", "", Some(&tool), Some(&query), &format)
                 .await
             {
                 Ok(result) => {
                     if result.success {
-                        println!("✅ Glean tool test completed successfully!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CHECKMARK,
+                            style("Glean tool test completed successfully!")
+                                .green()
+                                .bold()
+                        ));
                         std::process::exit(0);
                     } else {
-                        println!("❌ Glean tool test failed!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style("Glean tool test failed!").red().bold()
+                        ));
                         if let Some(error) = &result.error {
-                            println!("Error: {error}");
+                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to test Glean tool on host: {e}");
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to test Glean tool on host: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::TestAllHostTools { host, format } => {
-            println!("🧪 Testing all Glean tools on host: {host}");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "🧪 Testing all Glean tools on host: {}",
+                style(&host).cyan().bold()
+            ));
 
             match run_host_operation(&host, "test_all", "", None, None, &format).await {
                 Ok(result) => {
                     if result.success {
-                        println!("✅ All Glean tools test completed successfully!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CHECKMARK,
+                            style("All Glean tools test completed successfully!")
+                                .green()
+                                .bold()
+                        ));
                         std::process::exit(0);
                     } else {
-                        println!("❌ Some Glean tools failed!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style("Some Glean tools failed!").red().bold()
+                        ));
                         if let Some(error) = &result.error {
-                            println!("Error: {error}");
+                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to test all Glean tools: {e}");
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to test all Glean tools: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::CheckHost { host, format } => {
-            println!("🔍 Checking if host application '{host}' is available");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "🔍 Checking if host application '{}' is available",
+                style(&host).cyan().bold()
+            ));
 
             match check_host_availability(&host, &format) {
                 Ok(available) => {
                     if available {
-                        println!("✅ Host '{host}' is available and ready for testing");
+                        let _ = term.write_line(&format!(
+                            "{}{} '{}' is available and ready for testing",
+                            CHECKMARK,
+                            style("Host").green(),
+                            style(host).cyan()
+                        ));
                         std::process::exit(0);
                     } else {
-                        println!("❌ Host '{host}' is not available");
+                        let _ = term.write_line(&format!(
+                            "{}{} '{}' is not available",
+                            CROSS_MARK,
+                            style("Host").red(),
+                            style(host).cyan()
+                        ));
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to check host availability: {e}");
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to check host availability: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
         }
 
         Commands::ListHostServers { host, format } => {
-            println!("📋 Listing MCP servers in host: {host}");
+            let term = Term::stdout();
+            let _ = term.write_line(&format!(
+                "📋 Listing MCP servers in host: {}",
+                style(&host).cyan().bold()
+            ));
 
             match run_host_operation(&host, "list", "", None, None, &format).await {
                 Ok(result) => {
                     if result.success {
-                        println!("✅ MCP servers listed successfully!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CHECKMARK,
+                            style("MCP servers listed successfully!").green().bold()
+                        ));
                         std::process::exit(0);
                     } else {
-                        println!("❌ Failed to list MCP servers!");
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style("Failed to list MCP servers!").red().bold()
+                        ));
                         if let Some(error) = &result.error {
-                            println!("Error: {error}");
+                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
                         }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to list MCP servers: {e}");
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to list MCP servers: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
@@ -528,6 +867,9 @@ async fn handle_command(command: Commands) -> Result<()> {
             max_concurrent,
             timeout,
             verbose,
+            debug,
+            retry_attempts,
+            retry_backoff,
             json,
             output,
         } => {
@@ -538,16 +880,32 @@ async fn handle_command(command: Commands) -> Result<()> {
                 format.clone()
             };
 
-            println!("🧪 Testing all available MCP tools");
-            println!("📋 Instance: {}", instance);
-            println!("🔧 Tools filter: {}", tools);
-            println!("📊 Scenario: {}", scenario);
-            println!("⚡ Parallel: {}", parallel);
+            let term = Term::stdout();
 
-            if parallel {
-                println!("🚀 Max concurrent: {}", max_concurrent);
+            // Only show progress for non-JSON output
+            if actual_format != "json" {
+                // Clean header
+                let _ = term.write_line(&format!(
+                    "\n{} {}",
+                    GEAR,
+                    style("Glean MCP Tool Testing").cyan().bold()
+                ));
+
+                // Configuration summary - clean and compact
+                let _ = term.write_line(&format!(
+                    "📋 {} | 🔧 {} | ⚡ {} {}",
+                    style(&instance).cyan(),
+                    style(&tools).cyan(),
+                    if parallel { "Parallel" } else { "Sequential" },
+                    if parallel {
+                        format!("({})", style(max_concurrent.to_string()).dim())
+                    } else {
+                        String::new()
+                    }
+                ));
+
+                let _ = term.write_line("");
             }
-            println!("⏱️  Timeout per tool: {}s", timeout);
 
             let test_options = glean_mcp_test::TestAllOptions {
                 tools_filter: tools.clone(),
@@ -556,35 +914,67 @@ async fn handle_command(command: Commands) -> Result<()> {
                 max_concurrent,
                 timeout,
                 verbose,
+                debug,
+                retry_attempts,
+                retry_backoff_seconds: retry_backoff,
                 format: actual_format.clone(),
             };
 
             match run_test_all(Some(&instance), &test_options) {
                 Ok(result) => {
-                    let output_content = result.format_output(&actual_format, verbose);
+                    let output_content = result.format_output(&actual_format, verbose, debug);
 
                     if let Some(output_file) = output {
                         match std::fs::write(&output_file, &output_content) {
-                            Ok(_) => println!("📄 Results written to: {}", output_file),
+                            Ok(_) => {
+                                let _ = term.write_line(&format!(
+                                    "📄 Results written to: {}",
+                                    style(&output_file).cyan()
+                                ));
+                            }
                             Err(e) => {
-                                eprintln!("❌ Failed to write output file: {}", e);
+                                let _ = term.write_line(&format!(
+                                    "{}{}",
+                                    CROSS_MARK,
+                                    style(format!("Failed to write output file: {}", e)).red()
+                                ));
                                 std::process::exit(1);
                             }
                         }
-                    } else {
+                    } else if actual_format == "json" {
+                        // For JSON output, print directly without styling
                         println!("{}", output_content);
+                    } else {
+                        // For text output, use console
+                        let _ = term.write_line(&output_content);
                     }
 
                     if result.success {
-                        println!("\n🎉 All tool testing completed successfully!");
+                        if actual_format != "json" {
+                            let _ = term.write_line(&format!(
+                                "\n{}{}",
+                                PARTY,
+                                style("All tests completed successfully!").green().bold()
+                            ));
+                        }
                         std::process::exit(0);
                     } else {
-                        println!("\n❌ Some tools failed testing!");
+                        if actual_format != "json" {
+                            let _ = term.write_line(&format!(
+                                "\n{}{}",
+                                CROSS_MARK,
+                                style("Some tools failed testing!").red().bold()
+                            ));
+                        }
                         std::process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to run test-all: {}", e);
+                    let _ = term.write_line(&format!(
+                        "{}{}",
+                        CROSS_MARK,
+                        style(format!("Failed to run test-all: {}", e)).red()
+                    ));
                     std::process::exit(1);
                 }
             }
@@ -592,69 +982,289 @@ async fn handle_command(command: Commands) -> Result<()> {
     }
 }
 
-fn print_text_result(result: &glean_mcp_test::InspectorResult) {
-    println!("\n📊 MCP Inspector Results:");
-    println!(
-        "Status: {}",
-        if result.success {
-            "✅ Success"
-        } else {
-            "❌ Failed"
-        }
-    );
+fn print_enhanced_text_result(result: &glean_mcp_test::InspectorResult) {
+    let term = Term::stdout();
+
+    let _ = term.write_line("");
+    let _ = term.write_line(&format!(
+        "📊 {}",
+        style("MCP Inspector Results").bold().underlined()
+    ));
+    let _ = term.write_line(&style("─".repeat(50)).dim().to_string());
+
+    // Status with enhanced styling
+    let status_text = if result.success {
+        format!("{}{}", CHECKMARK, style("SUCCESS").green().bold())
+    } else {
+        format!("{}{}", CROSS_MARK, style("FAILED").red().bold())
+    };
+    let _ = term.write_line(&format!("Status: {}", status_text));
 
     if let Some(tool_results) = &result.tool_results {
-        println!("\n🔧 Tool Validation Results:");
+        let _ = term.write_line("");
+        let _ = term.write_line(&format!(
+            "{}{}",
+            GEAR,
+            style("Tool Validation Results:").bold()
+        ));
+        let _ = term.write_line(&style("─".repeat(30)).dim().to_string());
+
         for (tool, success) in tool_results {
-            let status = if *success { "✅" } else { "❌" };
-            println!("  {status} {tool}");
+            let (emoji, tool_style) = if *success {
+                (CHECKMARK, style(tool).green())
+            } else {
+                (CROSS_MARK, style(tool).red())
+            };
+            let _ = term.write_line(&format!("  {}{}", emoji, tool_style));
         }
     }
 
     if let Some(error) = &result.error {
-        println!("\n⚠️  Error Details: {error}");
+        let _ = term.write_line("");
+        let _ = term.write_line(&format!(
+            "{}{}",
+            WARNING,
+            style("Error Details:").red().bold()
+        ));
+        let _ = term.write_line(&format!("  {}", style(error).dim()));
     }
 }
 
 fn check_prerequisites() -> Result<()> {
-    println!("🔍 Checking system prerequisites...");
+    let term = Term::stdout();
+    let _ = term.write_line(&format!(
+        "{}{}",
+        MAGNIFYING_GLASS,
+        style("Checking system prerequisites...").cyan().bold()
+    ));
 
     // Check if npx is available
     if let Ok(output) = std::process::Command::new("npx").arg("--version").output() {
         if output.status.success() {
             let version = String::from_utf8_lossy(&output.stdout);
-            println!("✅ npx available: {}", version.trim());
+            let _ = term.write_line(&format!(
+                "{}{} {}",
+                CHECKMARK,
+                style("npx available:").green(),
+                style(version.trim()).dim()
+            ));
         } else {
-            println!("❌ npx command failed");
+            let _ = term.write_line(&format!(
+                "{}{}",
+                CROSS_MARK,
+                style("npx command failed").red()
+            ));
             return Err(GleanMcpError::Config("npx not available".to_string()));
         }
     } else {
-        println!("❌ npx not found");
-        println!("Please install Node.js and npm to use MCP Inspector");
+        let _ = term.write_line(&format!("{}{}", CROSS_MARK, style("npx not found").red()));
+        let _ = term.write_line(
+            &style("Please install Node.js and npm to use MCP Inspector")
+                .yellow()
+                .to_string(),
+        );
         return Err(GleanMcpError::Config("npx not found".to_string()));
     }
 
     // Check if MCP Inspector package is available
-    println!("🔍 Checking MCP Inspector availability...");
+    let _ = term.write_line(&format!(
+        "{}{}",
+        MAGNIFYING_GLASS,
+        style("Checking MCP Inspector availability...").cyan()
+    ));
     match std::process::Command::new("npx")
         .args(["@modelcontextprotocol/inspector", "--help"])
         .output()
     {
         Ok(output) => {
             if output.status.success() {
-                println!("✅ MCP Inspector available");
+                let _ = term.write_line(&format!(
+                    "{}{}",
+                    CHECKMARK,
+                    style("MCP Inspector available").green()
+                ));
             } else {
-                println!("⚠️  MCP Inspector may need to be installed");
-                println!("Run: npx @modelcontextprotocol/inspector --help");
+                let _ = term.write_line(&format!(
+                    "{}{}",
+                    WARNING,
+                    style("MCP Inspector may need to be installed").yellow()
+                ));
+                let _ = term.write_line(&format!(
+                    "  {}: {}",
+                    style("Run").bold(),
+                    style("npx @modelcontextprotocol/inspector --help").cyan()
+                ));
             }
         }
         Err(_) => {
-            println!("⚠️  Could not check MCP Inspector");
+            let _ = term.write_line(&format!(
+                "{}{}",
+                WARNING,
+                style("Could not check MCP Inspector").yellow()
+            ));
         }
     }
 
-    println!("🎯 Prerequisites check completed!");
-    println!("Run 'glean-mcp-test inspect' to test MCP server connection");
+    let _ = term.write_line("");
+    let _ = term.write_line(&format!(
+        "🎯 {}",
+        style("Prerequisites check completed!").green().bold()
+    ));
+    let _ = term.write_line(&format!(
+        "💡 {}: {}",
+        style("Next step").bold(),
+        style("glean-mcp-test inspect").cyan()
+    ));
+
+    Ok(())
+}
+
+async fn check_prerequisites_with_progress() -> Result<()> {
+    let term = Term::stdout();
+    let _ = term.write_line(&format!(
+        "{}{}",
+        MAGNIFYING_GLASS,
+        style("Checking system prerequisites...").cyan().bold()
+    ));
+
+    // Create progress bar for prerequisites checking
+    let pb = ProgressBar::new(4);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] {bar:30.cyan/blue} {pos:>1}/{len:1} {msg}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar()),
+    );
+    pb.enable_steady_tick(Duration::from_millis(100));
+
+    // Check if npx is available
+    pb.set_message("Checking Node.js/npm...");
+    if let Ok(output) = std::process::Command::new("npx").arg("--version").output() {
+        if output.status.success() {
+            let version = String::from_utf8_lossy(&output.stdout);
+            let _ = term.write_line(&format!(
+                "{}{} {}",
+                CHECKMARK,
+                style("npx available:").green(),
+                style(version.trim()).dim()
+            ));
+        } else {
+            pb.finish_with_message(style("❌ npx command failed").red().to_string());
+            let _ = term.write_line(&format!(
+                "{}{}",
+                CROSS_MARK,
+                style("npx command failed").red()
+            ));
+            return Err(GleanMcpError::Config("npx not available".to_string()));
+        }
+    } else {
+        pb.finish_with_message(style("❌ npx not found").red().to_string());
+        let _ = term.write_line(&format!("{}{}", CROSS_MARK, style("npx not found").red()));
+        let _ = term.write_line(
+            &style("Please install Node.js and npm to use MCP Inspector")
+                .yellow()
+                .to_string(),
+        );
+        return Err(GleanMcpError::Config("npx not found".to_string()));
+    }
+    pb.inc(1);
+
+    // Add small delay for visual effect
+    smol::Timer::after(Duration::from_millis(200)).await;
+
+    // Check if MCP Inspector package is available
+    pb.set_message("Checking MCP Inspector...");
+    match std::process::Command::new("npx")
+        .args(["@modelcontextprotocol/inspector", "--help"])
+        .output()
+    {
+        Ok(output) => {
+            if output.status.success() {
+                let _ = term.write_line(&format!(
+                    "{}{}",
+                    CHECKMARK,
+                    style("MCP Inspector available").green()
+                ));
+            } else {
+                let _ = term.write_line(&format!(
+                    "{}{}",
+                    WARNING,
+                    style("MCP Inspector may need to be installed").yellow()
+                ));
+                let _ = term.write_line(&format!(
+                    "  {}: {}",
+                    style("Run").bold(),
+                    style("npx @modelcontextprotocol/inspector --help").cyan()
+                ));
+            }
+        }
+        Err(_) => {
+            let _ = term.write_line(&format!(
+                "{}{}",
+                WARNING,
+                style("Could not check MCP Inspector").yellow()
+            ));
+        }
+    }
+    pb.inc(1);
+
+    // Add small delay for visual effect
+    smol::Timer::after(Duration::from_millis(200)).await;
+
+    // Check curl availability
+    pb.set_message("Checking curl...");
+    if let Ok(output) = std::process::Command::new("curl").arg("--version").output() {
+        if output.status.success() {
+            let _ = term.write_line(&format!("{}{}", CHECKMARK, style("curl available").green()));
+        } else {
+            let _ = term.write_line(&format!(
+                "{}{}",
+                WARNING,
+                style("curl command failed").yellow()
+            ));
+        }
+    } else {
+        let _ = term.write_line(&format!("{}{}", WARNING, style("curl not found").yellow()));
+        let _ = term.write_line(
+            &style("curl is required for MCP server testing")
+                .yellow()
+                .to_string(),
+        );
+    }
+    pb.inc(1);
+
+    // Add small delay for visual effect
+    smol::Timer::after(Duration::from_millis(200)).await;
+
+    // Check environment variables
+    pb.set_message("Checking environment...");
+    if std::env::var("GLEAN_AUTH_TOKEN").is_ok() {
+        let _ = term.write_line(&format!(
+            "{}{}",
+            CHECKMARK,
+            style("GLEAN_AUTH_TOKEN configured").green()
+        ));
+    } else {
+        let _ = term.write_line(&format!(
+            "{}{}",
+            WARNING,
+            style("GLEAN_AUTH_TOKEN not set (optional)").yellow()
+        ));
+    }
+    pb.inc(1);
+
+    pb.finish_with_message(format!(
+        "{}{}",
+        CHECKMARK,
+        style("Prerequisites check complete").green()
+    ));
+
+    let _ = term.write_line("");
+    let _ = term.write_line(&format!(
+        "💡 {}: {}",
+        style("Next step").bold(),
+        style("glean-mcp-test inspect").cyan()
+    ));
 
     Ok(())
 }
