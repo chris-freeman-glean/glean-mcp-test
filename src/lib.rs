@@ -11,6 +11,9 @@ pub use host_controllers::*;
 pub use mcp_inspector::*;
 pub use utils::*;
 
+// Re-export the new test-all functionality
+pub use mcp_inspector::{AllToolsTestResult, TestAllOptions, ToolTestResult, run_test_all};
+
 /// Main error type for the framework
 #[derive(thiserror::Error, Debug)]
 pub enum GleanMcpError {

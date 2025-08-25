@@ -6,6 +6,24 @@ use smol::io::{AsyncBufReadExt, BufReader};
 use smol::stream::StreamExt;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Async timeout helper function using smol Timer
+async fn async_timeout<T, F>(duration: Duration, future: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    use futures::future::{Either, select};
+    use smol::Timer;
+
+    let timeout_future = Timer::after(duration);
+
+    match select(Box::pin(future), Box::pin(timeout_future)).await {
+        Either::Left((result, _)) => result,
+        Either::Right((_, _)) => Err(GleanMcpError::Process("Operation timed out".to_string())),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InspectorResult {
@@ -37,9 +55,232 @@ impl InspectorResult {
     }
 }
 
+// New data structures for test-all functionality
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestAllOptions {
+    pub tools_filter: String,
+    pub scenario: String,
+    pub parallel: bool,
+    pub max_concurrent: usize,
+    pub timeout: u64,
+    pub verbose: bool,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllToolsTestResult {
+    pub success: bool,
+    pub total_tools: usize,
+    pub successful_tools: usize,
+    pub failed_tools: usize,
+    pub tool_results: HashMap<String, ToolTestResult>,
+    pub execution_summary: ExecutionSummary,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolTestResult {
+    pub tool_name: String,
+    pub success: bool,
+    pub response_time_ms: u64,
+    pub test_query: String,
+    pub response_data: Option<Value>,
+    pub error_message: Option<String>,
+    pub validation_details: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionSummary {
+    pub start_time: String,
+    pub end_time: String,
+    pub total_duration_ms: u64,
+    pub parallel_execution: bool,
+    pub timeout_settings: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: Option<String>,
+    pub schema: Option<Value>,
+}
+
+impl AllToolsTestResult {
+    pub fn format_output(&self, format: &str, verbose: bool) -> String {
+        match format {
+            "json" => self.format_json(),
+            "summary" => self.format_summary(),
+            _ => self.format_text(verbose),
+        }
+    }
+
+    fn format_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    fn format_summary(&self) -> String {
+        format!(
+            "🧪 Test Summary: {}/{} tools successful ({}%)\n⏱️  Total time: {:.2}s",
+            self.successful_tools,
+            self.total_tools,
+            if self.total_tools > 0 {
+                (self.successful_tools * 100) / self.total_tools
+            } else {
+                0
+            },
+            self.execution_summary.total_duration_ms as f64 / 1000.0
+        )
+    }
+
+    fn format_text(&self, verbose: bool) -> String {
+        let mut output = String::new();
+
+        // Header with overall status
+        output.push_str("🧪 Glean MCP Tools Test Results\n");
+        output.push_str("=".repeat(50).as_str());
+        output.push_str("\n");
+        output.push_str(&format!(
+            "📊 Overall Status: {}\n",
+            if self.success {
+                "✅ SUCCESS"
+            } else {
+                "❌ FAILED"
+            }
+        ));
+        output.push_str(&format!(
+            "🔧 Tools Tested: {}/{} successful\n",
+            self.successful_tools, self.total_tools
+        ));
+
+        if self.total_tools > 0 {
+            let success_rate = (self.successful_tools * 100) / self.total_tools;
+            output.push_str(&format!("📈 Success Rate: {}%\n", success_rate));
+        }
+
+        // Individual tool results
+        output.push_str("\n📋 Individual Tool Results:\n");
+        output.push_str("-".repeat(30).as_str());
+        output.push_str("\n");
+
+        for (tool_name, result) in &self.tool_results {
+            let status = if result.success { "✅" } else { "❌" };
+            let duration = format!("{:.2}s", result.response_time_ms as f64 / 1000.0);
+            output.push_str(&format!("  {} {} ({})\n", status, tool_name, duration));
+
+            if verbose {
+                output.push_str(&format!("    Query: \"{}\"\n", result.test_query));
+                if !result.success {
+                    if let Some(error) = &result.error_message {
+                        output.push_str(&format!("    Error: {}\n", error));
+                    }
+                } else if let Some(validation) = &result.validation_details {
+                    output.push_str(&format!("    Validation: {}\n", validation));
+                }
+                output.push_str("\n");
+            }
+        }
+
+        // Execution summary
+        output.push_str(&format!("\n⏱️  Execution Summary:\n"));
+        output.push_str("-".repeat(20).as_str());
+        output.push_str("\n");
+        output.push_str(&format!(
+            "   Total time: {:.2}s\n",
+            self.execution_summary.total_duration_ms as f64 / 1000.0
+        ));
+        output.push_str(&format!(
+            "   Parallel: {}\n",
+            if self.execution_summary.parallel_execution {
+                "Yes"
+            } else {
+                "No"
+            }
+        ));
+        output.push_str(&format!(
+            "   Timeout per tool: {}s\n",
+            self.execution_summary.timeout_settings
+        ));
+
+        if let Some(error) = &self.error {
+            output.push_str(&format!("\n⚠️  Global Error: {}\n", error));
+        }
+
+        output
+    }
+}
+
+impl ToolTestResult {
+    pub fn new_success(
+        tool_name: String,
+        response_time_ms: u64,
+        test_query: String,
+        response_data: Value,
+    ) -> Self {
+        Self {
+            tool_name,
+            success: true,
+            response_time_ms,
+            test_query,
+            response_data: Some(response_data),
+            error_message: None,
+            validation_details: Some("Response received successfully".to_string()),
+        }
+    }
+
+    pub fn new_error(
+        tool_name: String,
+        response_time_ms: u64,
+        test_query: String,
+        error: String,
+    ) -> Self {
+        Self {
+            tool_name,
+            success: false,
+            response_time_ms,
+            test_query,
+            response_data: None,
+            error_message: Some(error),
+            validation_details: None,
+        }
+    }
+}
+
+pub struct TestQueryGenerator;
+
+impl TestQueryGenerator {
+    pub fn generate_test_query(&self, tool_name: &str) -> String {
+        match tool_name {
+            "search" => "remote work policy".to_string(),
+            "chat" => "What are the main benefits of using Glean?".to_string(),
+            "read_document" => {
+                "https://help.glean.com/en/articles/6248863-getting-started-with-glean".to_string()
+            }
+            "code_search" => "function authenticate".to_string(),
+            "employee_search" => "engineering team".to_string(),
+            "gmail_search" => "from:noreply@glean.com".to_string(),
+            "outlook_search" => "subject:meeting notes".to_string(),
+            "meeting_lookup" => "weekly standup".to_string(),
+            "web_browser" => "https://www.glean.com".to_string(),
+            "gemini_web_search" => "latest technology trends".to_string(),
+            _ => format!("test query for {}", tool_name),
+        }
+    }
+
+    pub fn get_tool_category(&self, tool_name: &str) -> &'static str {
+        match tool_name {
+            "search" | "chat" | "read_document" => "core",
+            "code_search" | "employee_search" | "gmail_search" | "outlook_search"
+            | "meeting_lookup" | "web_browser" | "gemini_web_search" => "enterprise",
+            _ => "unknown",
+        }
+    }
+}
+
 pub struct GleanMCPInspector {
     server_url: String,
     auth_token: Option<String>,
+    query_generator: TestQueryGenerator,
 }
 
 impl GleanMCPInspector {
@@ -59,6 +300,523 @@ impl GleanMCPInspector {
         Self {
             server_url: format!("https://{instance_name}-be.glean.com/mcp/default"),
             auth_token,
+            query_generator: TestQueryGenerator,
+        }
+    }
+
+    /// Test all available MCP tools and report comprehensive results
+    pub async fn test_all_tools(&self, options: &TestAllOptions) -> Result<AllToolsTestResult> {
+        let start_time = Instant::now();
+        let start_time_str = chrono::Utc::now().to_rfc3339();
+
+        println!("🔍 Starting comprehensive tool testing...");
+
+        // Step 1: Discover available tools
+        let tools_result = self.list_available_tools().await?;
+        let available_tools = self.extract_tools_from_result(&tools_result)?;
+
+        // Step 2: Filter tools based on options
+        let tools_to_test = self.filter_tools(&available_tools, options);
+
+        if tools_to_test.is_empty() {
+            return Ok(AllToolsTestResult {
+                success: false,
+                total_tools: 0,
+                successful_tools: 0,
+                failed_tools: 0,
+                tool_results: HashMap::new(),
+                execution_summary: ExecutionSummary {
+                    start_time: start_time_str.clone(),
+                    end_time: chrono::Utc::now().to_rfc3339(),
+                    total_duration_ms: start_time.elapsed().as_millis() as u64,
+                    parallel_execution: options.parallel,
+                    timeout_settings: options.timeout,
+                },
+                error: Some("No tools found to test".to_string()),
+            });
+        }
+
+        println!("📋 Found {} tools to test", tools_to_test.len());
+        for tool in &tools_to_test {
+            println!(
+                "  • {} ({})",
+                tool.name,
+                self.query_generator.get_tool_category(&tool.name)
+            );
+        }
+
+        // Step 3: Execute tests
+        let test_results = if options.parallel {
+            println!(
+                "🚀 Running tests in parallel (max {} concurrent)",
+                options.max_concurrent
+            );
+            self.execute_tests_parallel(&tools_to_test, options).await?
+        } else {
+            println!("🔄 Running tests sequentially");
+            self.execute_tests_sequential(&tools_to_test, options)
+                .await?
+        };
+
+        // Step 4: Generate final result
+        let end_time = Instant::now();
+        let successful_count = test_results.iter().filter(|r| r.success).count();
+        let total_count = test_results.len();
+
+        let mut tool_results_map = HashMap::new();
+        for result in test_results {
+            tool_results_map.insert(result.tool_name.clone(), result);
+        }
+
+        let execution_summary = ExecutionSummary {
+            start_time: start_time_str,
+            end_time: chrono::Utc::now().to_rfc3339(),
+            total_duration_ms: end_time.duration_since(start_time).as_millis() as u64,
+            parallel_execution: options.parallel,
+            timeout_settings: options.timeout,
+        };
+
+        Ok(AllToolsTestResult {
+            success: successful_count == total_count,
+            total_tools: total_count,
+            successful_tools: successful_count,
+            failed_tools: total_count - successful_count,
+            tool_results: tool_results_map,
+            execution_summary,
+            error: None,
+        })
+    }
+
+    /// Extract tools from the list_available_tools result
+    fn extract_tools_from_result(&self, result: &InspectorResult) -> Result<Vec<ToolInfo>> {
+        let mut tools = Vec::new();
+
+        if let Some(inspector_data) = &result.inspector_data {
+            // Try to extract tools from various possible response structures
+            if let Some(result_data) = inspector_data.get("result") {
+                if let Some(tools_array) = result_data.get("tools").and_then(|t| t.as_array()) {
+                    for tool in tools_array {
+                        if let Some(name) = tool.get("name").and_then(|n| n.as_str()) {
+                            tools.push(ToolInfo {
+                                name: name.to_string(),
+                                description: tool
+                                    .get("description")
+                                    .and_then(|d| d.as_str())
+                                    .map(|s| s.to_string()),
+                                schema: tool.get("inputSchema").cloned(),
+                            });
+                        }
+                    }
+                }
+            } else if let Some(tools_array) = inspector_data.get("tools").and_then(|t| t.as_array())
+            {
+                for tool in tools_array {
+                    if let Some(name) = tool.get("name").and_then(|n| n.as_str()) {
+                        tools.push(ToolInfo {
+                            name: name.to_string(),
+                            description: tool
+                                .get("description")
+                                .and_then(|d| d.as_str())
+                                .map(|s| s.to_string()),
+                            schema: tool.get("inputSchema").cloned(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // If no tools found in structured data, fall back to expected tools (core + enterprise)
+        if tools.is_empty() {
+            println!("⚠️  No tools found in response, using default tool set");
+            tools = vec![
+                // Core tools
+                ToolInfo {
+                    name: "search".to_string(),
+                    description: Some("Search Glean's content index".to_string()),
+                    schema: None,
+                },
+                ToolInfo {
+                    name: "chat".to_string(),
+                    description: Some("Interact with Glean's AI assistant".to_string()),
+                    schema: None,
+                },
+                ToolInfo {
+                    name: "read_document".to_string(),
+                    description: Some("Read documents by ID/URL".to_string()),
+                    schema: None,
+                },
+                // Enterprise tools
+                ToolInfo {
+                    name: "code_search".to_string(),
+                    description: Some("Search code repositories".to_string()),
+                    schema: None,
+                },
+                ToolInfo {
+                    name: "employee_search".to_string(),
+                    description: Some("Search people directory".to_string()),
+                    schema: None,
+                },
+                ToolInfo {
+                    name: "gmail_search".to_string(),
+                    description: Some("Search Gmail messages".to_string()),
+                    schema: None,
+                },
+                ToolInfo {
+                    name: "outlook_search".to_string(),
+                    description: Some("Search Outlook messages".to_string()),
+                    schema: None,
+                },
+                ToolInfo {
+                    name: "meeting_lookup".to_string(),
+                    description: Some("Find meeting information".to_string()),
+                    schema: None,
+                },
+                ToolInfo {
+                    name: "web_browser".to_string(),
+                    description: Some("Web browsing capability".to_string()),
+                    schema: None,
+                },
+                ToolInfo {
+                    name: "gemini_web_search".to_string(),
+                    description: Some("Web search capability".to_string()),
+                    schema: None,
+                },
+            ];
+        }
+
+        Ok(tools)
+    }
+
+    /// Filter tools based on the test options
+    fn filter_tools(
+        &self,
+        available_tools: &[ToolInfo],
+        options: &TestAllOptions,
+    ) -> Vec<ToolInfo> {
+        match options.tools_filter.as_str() {
+            "all" => available_tools.to_vec(),
+            "core" => available_tools
+                .iter()
+                .filter(|tool| self.query_generator.get_tool_category(&tool.name) == "core")
+                .cloned()
+                .collect(),
+            "enterprise" => available_tools
+                .iter()
+                .filter(|tool| self.query_generator.get_tool_category(&tool.name) == "enterprise")
+                .cloned()
+                .collect(),
+            tools_list => {
+                let requested_tools: Vec<&str> = tools_list.split(',').map(|s| s.trim()).collect();
+                available_tools
+                    .iter()
+                    .filter(|tool| requested_tools.contains(&tool.name.as_str()))
+                    .cloned()
+                    .collect()
+            }
+        }
+    }
+
+    /// Execute tests in parallel with concurrency limits
+    async fn execute_tests_parallel(
+        &self,
+        tools: &[ToolInfo],
+        options: &TestAllOptions,
+    ) -> Result<Vec<ToolTestResult>> {
+        use smol::lock::Semaphore;
+
+        let semaphore = Arc::new(Semaphore::new(options.max_concurrent));
+        let mut tasks = Vec::new();
+
+        for tool in tools {
+            let semaphore = semaphore.clone();
+            let tool = tool.clone();
+            let timeout = Duration::from_secs(options.timeout);
+            let query = self.query_generator.generate_test_query(&tool.name);
+
+            let server_url = self.server_url.clone();
+            let auth_token = self.auth_token.clone();
+
+            let task = async move {
+                let _permit = semaphore.acquire().await;
+
+                println!("🔧 Testing tool: {} with query: \"{}\"", tool.name, query);
+
+                let start_time = Instant::now();
+                let result = async_timeout(
+                    timeout,
+                    Self::test_tool_direct(server_url, auth_token, &tool.name, &query),
+                )
+                .await;
+
+                let response_time_ms = start_time.elapsed().as_millis() as u64;
+
+                match result {
+                    Ok(response_data) => {
+                        println!(
+                            "  ✅ {} completed ({:.2}s)",
+                            tool.name,
+                            response_time_ms as f64 / 1000.0
+                        );
+                        ToolTestResult::new_success(
+                            tool.name,
+                            response_time_ms,
+                            query,
+                            response_data,
+                        )
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("timed out") {
+                            println!("  ⏰ {} timed out", tool.name);
+                            ToolTestResult::new_error(
+                                tool.name,
+                                response_time_ms,
+                                query,
+                                format!("Timeout after {}s", timeout.as_secs()),
+                            )
+                        } else {
+                            println!("  ❌ {} failed: {}", tool.name, e);
+                            ToolTestResult::new_error(
+                                tool.name,
+                                response_time_ms,
+                                query,
+                                e.to_string(),
+                            )
+                        }
+                    }
+                }
+            };
+
+            tasks.push(task);
+        }
+
+        // Execute all tests concurrently
+        let results = futures::future::join_all(tasks).await;
+        Ok(results)
+    }
+
+    /// Execute tests sequentially
+    async fn execute_tests_sequential(
+        &self,
+        tools: &[ToolInfo],
+        options: &TestAllOptions,
+    ) -> Result<Vec<ToolTestResult>> {
+        let mut results = Vec::new();
+        let timeout = Duration::from_secs(options.timeout);
+
+        for tool in tools {
+            let query = self.query_generator.generate_test_query(&tool.name);
+            println!("🔧 Testing tool: {} with query: \"{}\"", tool.name, query);
+
+            let start_time = Instant::now();
+            let result = async_timeout(
+                timeout,
+                Self::test_tool_direct(
+                    self.server_url.clone(),
+                    self.auth_token.clone(),
+                    &tool.name,
+                    &query,
+                ),
+            )
+            .await;
+
+            let response_time_ms = start_time.elapsed().as_millis() as u64;
+
+            let test_result = match result {
+                Ok(response_data) => {
+                    println!(
+                        "  ✅ {} completed ({:.2}s)",
+                        tool.name,
+                        response_time_ms as f64 / 1000.0
+                    );
+                    ToolTestResult::new_success(
+                        tool.name.clone(),
+                        response_time_ms,
+                        query,
+                        response_data,
+                    )
+                }
+                Err(e) => {
+                    if e.to_string().contains("timed out") {
+                        println!("  ⏰ {} timed out", tool.name);
+                        ToolTestResult::new_error(
+                            tool.name.clone(),
+                            response_time_ms,
+                            query,
+                            format!("Timeout after {}s", timeout.as_secs()),
+                        )
+                    } else {
+                        println!("  ❌ {} failed: {}", tool.name, e);
+                        ToolTestResult::new_error(
+                            tool.name.clone(),
+                            response_time_ms,
+                            query,
+                            e.to_string(),
+                        )
+                    }
+                }
+            };
+
+            results.push(test_result);
+        }
+
+        Ok(results)
+    }
+
+    /// Direct tool testing method (static to avoid borrowing issues in async contexts)
+    async fn test_tool_direct(
+        server_url: String,
+        auth_token: Option<String>,
+        tool_name: &str,
+        query: &str,
+    ) -> Result<Value> {
+        // Create MCP JSON-RPC request for tool call
+        let arguments = match tool_name {
+            "chat" => serde_json::json!({
+                "message": query
+            }),
+            "read_document" => serde_json::json!({
+                "url": query
+            }),
+            _ => serde_json::json!({
+                "query": query
+            }),
+        };
+
+        let tool_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments
+            }
+        });
+
+        let request_body =
+            serde_json::to_string(&tool_request).map_err(|e| GleanMcpError::Json(e))?;
+
+        // Prepare curl command for MCP tool call
+        let mut curl_args = vec![
+            "-s",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "Accept: application/json",
+            "-d",
+            &request_body,
+            "--max-time",
+            "30",
+        ];
+
+        // Add auth header if token is available
+        let auth_header;
+        if let Some(ref token) = auth_token {
+            auth_header = format!("Authorization: Bearer {}", token);
+            curl_args.extend_from_slice(&["-H", &auth_header]);
+        }
+
+        curl_args.push(&server_url);
+
+        // Execute curl command
+        let mut child = Command::new("curl")
+            .args(&curl_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {}", e)))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| GleanMcpError::Process("Failed to capture stdout".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| GleanMcpError::Process("Failed to capture stderr".to_string()))?;
+
+        let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
+
+        // Read output concurrently
+        let stdout_future = async {
+            let mut lines = Vec::new();
+            let mut line_reader = stdout_reader.lines();
+            while let Some(line) = line_reader.next().await.transpose()? {
+                lines.push(line);
+            }
+            Ok::<Vec<String>, std::io::Error>(lines)
+        };
+
+        let stderr_future = async {
+            let mut lines = Vec::new();
+            let mut line_reader = stderr_reader.lines();
+            while let Some(line) = line_reader.next().await.transpose()? {
+                lines.push(line);
+            }
+            Ok::<Vec<String>, std::io::Error>(lines)
+        };
+
+        let (stdout_lines, stderr_lines) = smol::future::zip(stdout_future, stderr_future).await;
+        let stdout_lines = stdout_lines
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {}", e)))?;
+        let stderr_lines = stderr_lines
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {}", e)))?;
+
+        let status = child
+            .status()
+            .await
+            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {}", e)))?;
+
+        if !status.success() {
+            let error_output = stderr_lines.join("\n");
+            return Err(GleanMcpError::Process(format!(
+                "MCP tool call failed: {}",
+                error_output
+            )));
+        }
+
+        let stdout_content = stdout_lines.join("\n");
+
+        // Try to parse the response as JSON-RPC
+        match serde_json::from_str::<Value>(&stdout_content) {
+            Ok(response_json) => {
+                if let Some(result) = response_json.get("result") {
+                    Ok(result.clone())
+                } else if let Some(error) = response_json.get("error") {
+                    Err(GleanMcpError::Process(format!(
+                        "MCP server error: {}",
+                        error
+                    )))
+                } else {
+                    Ok(response_json)
+                }
+            }
+            Err(_) => {
+                // If not JSON, check if it looks like an error
+                if stdout_content.contains("error")
+                    || stdout_content.contains("Error")
+                    || stdout_content.contains("401")
+                    || stdout_content.contains("403")
+                    || stdout_content.contains("Invalid Secret")
+                    || stdout_content.contains("Not allowed")
+                    || stdout_content.contains("Authentication")
+                    || stdout_content.contains("Unauthorized")
+                {
+                    Err(GleanMcpError::Process(format!(
+                        "Server error: {}",
+                        stdout_content
+                    )))
+                } else {
+                    Ok(serde_json::json!({
+                        "tool": tool_name,
+                        "query": query,
+                        "response": stdout_content,
+                        "success": true
+                    }))
+                }
+            }
         }
     }
 
@@ -573,9 +1331,20 @@ impl GleanMCPInspector {
             }
         );
 
-        // For basic connectivity test, assume core tools are available if server responds
+        // For basic connectivity test, assume all tools are available if server responds
         let mut tool_validation = HashMap::new();
-        let expected_tools = vec!["glean_search", "chat", "read_document"];
+        let expected_tools = vec![
+            "search",
+            "chat",
+            "read_document",
+            "code_search",
+            "employee_search",
+            "gmail_search",
+            "outlook_search",
+            "meeting_lookup",
+            "web_browser",
+            "gemini_web_search",
+        ];
 
         let is_authenticated = self.auth_token.is_some()
             && (response.lines().last() == Some("200") || response.lines().last() == Some("202"));
@@ -611,9 +1380,19 @@ impl GleanMCPInspector {
 
     /// Validate that Glean-specific tools are present and correctly configured
     /// (This method will be used when we implement full MCP protocol parsing)
-    #[must_use]
-    pub fn validate_glean_tools(inspector_data: Value) -> InspectorResult {
-        let expected_tools = vec!["glean_search", "chat", "read_document"];
+    pub fn validate_glean_tools(&self, inspector_data: Value) -> InspectorResult {
+        let expected_tools = vec![
+            "search",
+            "chat",
+            "read_document",
+            "code_search",
+            "employee_search",
+            "gmail_search",
+            "outlook_search",
+            "meeting_lookup",
+            "web_browser",
+            "gemini_web_search",
+        ];
         let empty_vec = vec![];
         let available_tools = inspector_data
             .get("tools")
@@ -686,5 +1465,16 @@ pub fn run_list_tools(instance_name: Option<&str>, _format: &str) -> Result<Insp
     smol::block_on(async {
         let inspector = GleanMCPInspector::new(instance_name);
         inspector.list_available_tools().await
+    })
+}
+
+/// Run comprehensive testing of all available MCP tools
+pub fn run_test_all(
+    instance_name: Option<&str>,
+    options: &TestAllOptions,
+) -> Result<AllToolsTestResult> {
+    smol::block_on(async {
+        let inspector = GleanMCPInspector::new(instance_name);
+        inspector.test_all_tools(options).await
     })
 }
