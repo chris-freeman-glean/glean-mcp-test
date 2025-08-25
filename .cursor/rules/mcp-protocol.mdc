@@ -27,9 +27,9 @@ Additional enterprise tools that may be available:
 
 ### Glean MCP Server URLs
 
-- **Default SSE**: `https://{instance}.glean.com/mcp/default/sse`
+- **Default HTTP**: `https://{instance}.glean.com/mcp/default`
 - **ChatGPT**: `https://{instance}.glean.com/mcp/chatgpt`
-- **Transport**: Streamable HTTP (Server-Sent Events)
+- **Transport**: Streamable HTTP
 
 ### Authentication Methods
 
@@ -53,7 +53,7 @@ The project uses `@modelcontextprotocol/inspector` npm package for protocol vali
 // Basic connectivity test expecting 401 for properly configured servers
 let mut child = Command::new("curl")
     .args(&[
-        "-H", "Accept: text/event-stream", // SSE header
+        "-H", "Accept: application/json", // JSON content type
         "-H", "User-Agent: glean-mcp-test/0.1.0",
         &self.server_url,
     ])

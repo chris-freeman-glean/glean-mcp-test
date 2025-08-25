@@ -21,7 +21,7 @@ pub struct GleanMCPInspector {
 
 ### Validation Flow
 
-1. **Basic Connectivity**: Test server reachability using curl with SSE headers
+1. **Basic Connectivity**: Test server reachability using curl with HTTP headers
 2. **Tool Discovery**: Enumerate available MCP tools
 3. **Schema Validation**: Verify tool schemas match expected Glean tools
 4. **Response Validation**: Check response structure and content
@@ -32,7 +32,7 @@ pub struct GleanMCPInspector {
 
 - **Expected Response**: 401 Unauthorized for properly configured servers
 - **Timeout**: 10 seconds for connectivity tests
-- **Headers**: Include `Accept: text/event-stream` for SSE support
+- **Headers**: Include `Accept: application/json` for proper content type
 - **User-Agent**: `glean-mcp-test/0.1.0` for identification
 
 ### Tool Validation

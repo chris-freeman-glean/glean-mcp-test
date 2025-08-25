@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use glean_mcp_test::{
-    GleanConfig, GleanMcpError, Result, run_list_tools, run_tool_test, run_validation,
+    GleanConfig, GleanMcpError, HostController, HostOperationResult, Result,
+    claude_code::ClaudeCodeController, run_list_tools, run_tool_test, run_validation,
 };
 
 #[derive(Parser)]
@@ -18,8 +19,8 @@ struct Cli {
 enum Commands {
     /// Validate Glean MCP server using MCP Inspector
     Inspect {
-        /// Glean instance name (default: glean-dev)
-        #[arg(short, long, default_value = "glean-dev")]
+        /// Glean instance name (default: scio-prod)
+        #[arg(short, long, default_value = "scio-prod")]
         instance: String,
 
         /// Output format (json, text)
@@ -39,8 +40,8 @@ enum Commands {
 
     /// Test authentication with current environment variables
     Auth {
-        /// Glean instance name (default: glean-dev)
-        #[arg(short, long, default_value = "glean-dev")]
+        /// Glean instance name (default: scio-prod)
+        #[arg(short, long, default_value = "scio-prod")]
         instance: String,
     },
 
@@ -54,8 +55,8 @@ enum Commands {
         #[arg(short, long)]
         query: String,
 
-        /// Glean instance name (default: glean-dev)
-        #[arg(short, long, default_value = "glean-dev")]
+        /// Glean instance name (default: scio-prod)
+        #[arg(short, long, default_value = "scio-prod")]
         instance: String,
 
         /// Output format (text, json)
@@ -65,9 +66,72 @@ enum Commands {
 
     /// List available tools from the MCP server
     ListTools {
-        /// Glean instance name (default: glean-dev)
-        #[arg(short, long, default_value = "glean-dev")]
+        /// Glean instance name (default: scio-prod)
+        #[arg(short, long, default_value = "scio-prod")]
         instance: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Verify MCP servers are configured and list available tools in a host
+    VerifyHost {
+        /// Host application (claude-code, cursor, vscode, claude-desktop)
+        #[arg(short = 'H', long)]
+        host: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Test a specific Glean tool through a host application
+    TestHostTool {
+        /// Host application (claude-code, cursor, vscode, claude-desktop)
+        #[arg(short = 'H', long)]
+        host: String,
+
+        /// Tool name (glean_search, chat, read_document, etc.)
+        #[arg(short, long)]
+        tool: String,
+
+        /// Query to send to the tool
+        #[arg(short, long)]
+        query: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Test all available Glean tools through a host application
+    TestAllHostTools {
+        /// Host application (claude-code, cursor, vscode, claude-desktop)
+        #[arg(short = 'H', long)]
+        host: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Check if a host application is available
+    CheckHost {
+        /// Host application (claude-code, cursor, vscode, claude-desktop)
+        #[arg(short = 'H', long)]
+        host: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// List all configured MCP servers in a host application
+    ListHostServers {
+        /// Host application (claude-code, cursor, vscode, claude-desktop)
+        #[arg(short = 'H', long)]
+        host: String,
 
         /// Output format (text, json)
         #[arg(short, long, default_value = "text")]
@@ -78,7 +142,12 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
+    // For async operations, use smol::block_on
+    smol::block_on(async { handle_command(cli.command).await })
+}
+
+async fn handle_command(command: Commands) -> Result<()> {
+    match command {
         Commands::Inspect { instance, format } => {
             println!("🚀 Starting Glean MCP Inspector validation...");
             println!("📋 Instance: {}", instance);
@@ -264,6 +333,128 @@ fn main() -> Result<()> {
                 }
             }
         }
+
+        Commands::VerifyHost { host, format } => {
+            println!("🔍 Verifying MCP servers in host: {}", host);
+
+            match run_host_operation(&host, "verify", "", None, None, &format).await {
+                Ok(result) => {
+                    if result.success {
+                        println!("✅ Host verification completed successfully!");
+                        std::process::exit(0);
+                    } else {
+                        println!("❌ Host verification failed!");
+                        if let Some(error) = &result.error {
+                            println!("Error: {}", error);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to verify host: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::TestHostTool {
+            host,
+            tool,
+            query,
+            format,
+        } => {
+            println!(
+                "🧪 Testing Glean tool '{}' on host '{}' with query: \"{}\"",
+                tool, host, query
+            );
+
+            match run_host_operation(&host, "test_tool", "", Some(&tool), Some(&query), &format)
+                .await
+            {
+                Ok(result) => {
+                    if result.success {
+                        println!("✅ Glean tool test completed successfully!");
+                        std::process::exit(0);
+                    } else {
+                        println!("❌ Glean tool test failed!");
+                        if let Some(error) = &result.error {
+                            println!("Error: {}", error);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to test Glean tool on host: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::TestAllHostTools { host, format } => {
+            println!("🧪 Testing all Glean tools on host: {}", host);
+
+            match run_host_operation(&host, "test_all", "", None, None, &format).await {
+                Ok(result) => {
+                    if result.success {
+                        println!("✅ All Glean tools test completed successfully!");
+                        std::process::exit(0);
+                    } else {
+                        println!("❌ Some Glean tools failed!");
+                        if let Some(error) = &result.error {
+                            println!("Error: {}", error);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to test all Glean tools: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::CheckHost { host, format } => {
+            println!("🔍 Checking if host application '{}' is available", host);
+
+            match check_host_availability(&host, &format).await {
+                Ok(available) => {
+                    if available {
+                        println!("✅ Host '{}' is available and ready for testing", host);
+                        std::process::exit(0);
+                    } else {
+                        println!("❌ Host '{}' is not available", host);
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to check host availability: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::ListHostServers { host, format } => {
+            println!("📋 Listing MCP servers in host: {}", host);
+
+            match run_host_operation(&host, "list", "", None, None, &format).await {
+                Ok(result) => {
+                    if result.success {
+                        println!("✅ MCP servers listed successfully!");
+                        std::process::exit(0);
+                    } else {
+                        println!("❌ Failed to list MCP servers!");
+                        if let Some(error) = &result.error {
+                            println!("Error: {}", error);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to list MCP servers: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }
 
@@ -335,4 +526,115 @@ fn check_prerequisites() -> Result<()> {
     println!("Run 'glean-mcp-test inspect' to test MCP server connection");
 
     Ok(())
+}
+
+/// Create a Claude Code controller (only supported host for now)
+fn create_claude_code_controller(host: &str) -> Result<ClaudeCodeController> {
+    match host {
+        "claude-code" => Ok(ClaudeCodeController::new()),
+        _ => Err(GleanMcpError::Host(format!(
+            "Unsupported host application: '{}'. Supported hosts: claude-code",
+            host
+        ))),
+    }
+}
+
+/// Run a host operation (configure, verify, test_tool, rollback)
+async fn run_host_operation(
+    host: &str,
+    operation: &str,
+    instance: &str,
+    tool: Option<&str>,
+    query: Option<&str>,
+    format: &str,
+) -> Result<HostOperationResult> {
+    let controller = create_claude_code_controller(host)?;
+
+    // Note: Server URL generation no longer needed for testing approach
+    let _server_url = format!("https://{}-be.glean.com/mcp/default", instance);
+
+    let result = match operation {
+        "verify" => controller.verify_mcp_server().await?,
+        "test_tool" => {
+            let tool_name = tool.ok_or_else(|| {
+                GleanMcpError::Host("Tool name is required for test_tool operation".to_string())
+            })?;
+            let query_text = query.ok_or_else(|| {
+                GleanMcpError::Host("Query is required for test_tool operation".to_string())
+            })?;
+            controller.test_glean_tool(tool_name, query_text).await?
+        }
+        "test_all" => controller.test_all_glean_tools().await?,
+        "list" => controller.list_mcp_servers().await?,
+        _ => {
+            return Err(GleanMcpError::Host(format!(
+                "Unknown operation: {}. Available: verify, test_tool, test_all, list",
+                operation
+            )));
+        }
+    };
+
+    // Print result based on format
+    if format == "json" {
+        let json_output =
+            serde_json::to_string_pretty(&result).map_err(|e| GleanMcpError::Json(e))?;
+        println!("{}", json_output);
+    } else {
+        print_host_result(&result);
+    }
+
+    Ok(result)
+}
+
+/// Check if a host application is available
+async fn check_host_availability(host: &str, format: &str) -> Result<bool> {
+    let controller = create_claude_code_controller(host)?;
+    let available = controller.check_availability()?;
+
+    if format == "json" {
+        let result = serde_json::json!({
+            "host": host,
+            "available": available,
+            "operation": "check_availability"
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        if available {
+            println!("✅ Host '{}' is available", host);
+        } else {
+            println!("❌ Host '{}' is not available", host);
+        }
+    }
+
+    Ok(available)
+}
+
+/// Print host operation result in text format
+fn print_host_result(result: &HostOperationResult) {
+    println!("\n📊 Host Operation Results:");
+    println!("Host: {}", result.host);
+    println!("Operation: {}", result.operation);
+    println!(
+        "Status: {}",
+        if result.success {
+            "✅ Success"
+        } else {
+            "❌ Failed"
+        }
+    );
+
+    if !result.details.is_empty() {
+        println!("Details: {}", result.details);
+    }
+
+    if let Some(error) = &result.error {
+        println!("⚠️  Error: {}", error);
+    }
+
+    if let Some(duration) = result.duration {
+        println!("⏱️  Duration: {:?}", duration);
+    }
 }

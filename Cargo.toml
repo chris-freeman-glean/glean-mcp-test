@@ -16,17 +16,17 @@ tokio = { version = "1.0", features = ["process", "rt"], optional = true }
 
 [lints.clippy]
 # Pedantic lints for better code quality
-pedantic = "warn"
+pedantic = { level = "warn", priority = -1 }
 # Nursery lints for experimental but useful checks
-nursery = "warn"
+nursery = { level = "warn", priority = -1 }
 # Performance lints
-perf = "warn"
+perf = { level = "warn", priority = -1 }
 # Style lints
-style = "warn"
+style = { level = "warn", priority = -1 }
 # Complexity lints
-complexity = "warn"
+complexity = { level = "warn", priority = -1 }
 # Correctness lints (highest priority)
-correctness = "deny"
+correctness = { level = "deny", priority = -1 }
 
 # Specific lint overrides
 too_many_lines = "allow"

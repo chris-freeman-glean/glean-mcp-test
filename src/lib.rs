@@ -3,9 +3,11 @@
 //! A comprehensive testing framework for validating Glean's MCP (Model Context Protocol)
 //! server functionality across all supported host applications.
 
+pub mod host_controllers;
 pub mod mcp_inspector;
 pub mod utils;
 
+pub use host_controllers::*;
 pub use mcp_inspector::*;
 pub use utils::*;
 

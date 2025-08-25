@@ -85,12 +85,23 @@ impl Default for GleanConfig {
             },
         );
 
+        host_applications.insert(
+            "claude_code".to_string(),
+            HostConfig {
+                auth_method: "native".to_string(),
+                config_type: "command_line".to_string(),
+                mcp_config_path: None, // Command-line tool, no config file
+                server_url: "https://scio-prod.glean.com/mcp/default".to_string(),
+                priority: "P1".to_string(),
+            },
+        );
+
         Self {
             glean_instance: GleanInstance {
-                name: "glean-dev-be".to_string(),
-                environment: "development".to_string(),
-                server_url: "https://glean-dev-be.glean.com/mcp/default".to_string(),
-                chatgpt_url: "https://glean-dev-be.glean.com/mcp/chatgpt".to_string(),
+                name: "scio-prod".to_string(),
+                environment: "production".to_string(),
+                server_url: "https://scio-prod.glean.com/mcp/default".to_string(),
+                chatgpt_url: "https://scio-prod.glean.com/mcp/chatgpt".to_string(),
             },
             mcp_inspector: McpInspectorConfig {
                 package: "@modelcontextprotocol/inspector".to_string(),

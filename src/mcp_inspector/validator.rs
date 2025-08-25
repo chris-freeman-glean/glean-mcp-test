@@ -16,7 +16,8 @@ pub struct InspectorResult {
 }
 
 impl InspectorResult {
-    pub fn new_success(tool_results: HashMap<String, bool>, inspector_data: Value) -> Self {
+    #[must_use]
+    pub const fn new_success(tool_results: HashMap<String, bool>, inspector_data: Value) -> Self {
         Self {
             success: true,
             tool_results: Some(tool_results),
@@ -25,7 +26,8 @@ impl InspectorResult {
         }
     }
 
-    pub fn new_error(error: String) -> Self {
+    #[must_use]
+    pub const fn new_error(error: String) -> Self {
         Self {
             success: false,
             tool_results: None,
@@ -41,6 +43,7 @@ pub struct GleanMCPInspector {
 }
 
 impl GleanMCPInspector {
+    #[must_use]
     pub fn new(instance_name: Option<&str>) -> Self {
         let instance_name = instance_name.unwrap_or("glean-dev");
 
@@ -54,7 +57,7 @@ impl GleanMCPInspector {
         }
 
         Self {
-            server_url: format!("https://{}-be.glean.com/mcp/default", instance_name),
+            server_url: format!("https://{instance_name}-be.glean.com/mcp/default"),
             auth_token,
         }
     }
@@ -77,11 +80,8 @@ impl GleanMCPInspector {
         tool_name: &str,
         query: &str,
     ) -> Result<InspectorResult> {
-        println!(
-            "🔍 Testing tool '{}' with direct MCP protocol call...",
-            tool_name
-        );
-        println!("📝 Query: {}", query);
+        println!("🔍 Testing tool '{tool_name}' with direct MCP protocol call...");
+        println!("📝 Query: {query}");
         println!("📍 Server: {}", self.server_url);
 
         // Create MCP JSON-RPC request for tool call
@@ -108,8 +108,7 @@ impl GleanMCPInspector {
             }
         });
 
-        let request_body =
-            serde_json::to_string(&tool_request).map_err(|e| GleanMcpError::Json(e))?;
+        let request_body = serde_json::to_string(&tool_request).map_err(GleanMcpError::Json)?;
 
         // Prepare curl command for MCP tool call
         let mut curl_args = vec![
@@ -129,7 +128,7 @@ impl GleanMCPInspector {
         // Add auth header if token is available
         let auth_header;
         if let Some(ref token) = self.auth_token {
-            auth_header = format!("Authorization: Bearer {}", token);
+            auth_header = format!("Authorization: Bearer {token}");
             curl_args.extend_from_slice(&["-H", &auth_header]);
             println!("🔐 Using authentication token for tool call");
         } else {
@@ -144,7 +143,7 @@ impl GleanMCPInspector {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {e}")))?;
 
         let stdout = child
             .stdout
@@ -179,85 +178,79 @@ impl GleanMCPInspector {
 
         let (stdout_lines, stderr_lines) = smol::future::zip(stdout_future, stderr_future).await;
         let stdout_lines = stdout_lines
-            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {e}")))?;
         let stderr_lines = stderr_lines
-            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {e}")))?;
 
         let status = child
             .status()
             .await
-            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {e}")))?;
 
         if !status.success() {
             let error_output = stderr_lines.join("\n");
             println!("❌ MCP tool call failed!");
-            println!("Error output: {}", error_output);
+            println!("Error output: {error_output}");
             return Ok(InspectorResult::new_error(format!(
-                "MCP tool call failed: {}",
-                error_output
+                "MCP tool call failed: {error_output}"
             )));
         }
 
         let stdout_content = stdout_lines.join("\n");
-        println!("📥 Raw response: {}", stdout_content);
+        println!("📥 Raw response: {stdout_content}");
 
         // Try to parse the response as JSON-RPC
-        match serde_json::from_str::<serde_json::Value>(&stdout_content) {
-            Ok(response_json) => {
-                // Check if it's a successful JSON-RPC response
-                if let Some(result) = response_json.get("result") {
-                    println!("✅ Tool call successful!");
-                    println!("📄 Response received from {}", tool_name);
+        if let Ok(response_json) = serde_json::from_str::<serde_json::Value>(&stdout_content) {
+            // Check if it's a successful JSON-RPC response
+            if let Some(result) = response_json.get("result") {
+                println!("✅ Tool call successful!");
+                println!("📄 Response received from {tool_name}");
 
-                    // Create success result with tool response
-                    let mut tool_results = std::collections::HashMap::new();
-                    tool_results.insert(tool_name.to_string(), true);
-
-                    Ok(InspectorResult::new_success(tool_results, result.clone()))
-                } else if let Some(error) = response_json.get("error") {
-                    println!("❌ MCP server returned error!");
-                    println!("Error: {}", error);
-                    return Ok(InspectorResult::new_error(format!(
-                        "MCP server error: {}",
-                        error
-                    )));
-                } else {
-                    // Unknown JSON structure
-                    println!("⚠️  Unexpected JSON response structure");
-                    let mut tool_results = std::collections::HashMap::new();
-                    tool_results.insert(tool_name.to_string(), true);
-                    Ok(InspectorResult::new_success(tool_results, response_json))
-                }
-            }
-            Err(_) => {
-                // If not JSON, treat as plain text response (might be an error)
-                println!("⚠️  Non-JSON response received");
-                println!("📄 Response: {}", stdout_content);
-
-                // Check if it looks like an error
-                if stdout_content.contains("error")
-                    || stdout_content.contains("Error")
-                    || stdout_content.contains("401")
-                    || stdout_content.contains("403")
-                {
-                    return Ok(InspectorResult::new_error(format!(
-                        "Server error: {}",
-                        stdout_content
-                    )));
-                }
-
+                // Create success result with tool response
                 let mut tool_results = std::collections::HashMap::new();
                 tool_results.insert(tool_name.to_string(), true);
 
-                let response_value = serde_json::json!({
-                    "tool": tool_name,
-                    "query": query,
-                    "response": stdout_content,
-                    "success": true
-                });
-
-                Ok(InspectorResult::new_success(tool_results, response_value))
+                Ok(InspectorResult::new_success(tool_results, result.clone()))
+            } else if let Some(error) = response_json.get("error") {
+                println!("❌ MCP server returned error!");
+                println!("Error: {error}");
+                Ok(InspectorResult::new_error(format!(
+                    "MCP server error: {error}"
+                )))
+            } else {
+                // Unknown JSON structure
+                println!("⚠️  Unexpected JSON response structure");
+                let mut tool_results = std::collections::HashMap::new();
+                tool_results.insert(tool_name.to_string(), true);
+                Ok(InspectorResult::new_success(tool_results, response_json))
             }
+        } else {
+            // If not JSON, treat as plain text response (might be an error)
+            println!("⚠️  Non-JSON response received");
+            println!("📄 Response: {stdout_content}");
+
+            // Check if it looks like an error
+            if stdout_content.contains("error")
+                || stdout_content.contains("Error")
+                || stdout_content.contains("401")
+                || stdout_content.contains("403")
+            {
+                return Ok(InspectorResult::new_error(format!(
+                    "Server error: {stdout_content}"
+                )));
+            }
+
+            let mut tool_results = std::collections::HashMap::new();
+            tool_results.insert(tool_name.to_string(), true);
+
+            let response_value = serde_json::json!({
+                "tool": tool_name,
+                "query": query,
+                "response": stdout_content,
+                "success": true
+            });
+
+            Ok(InspectorResult::new_success(tool_results, response_value))
         }
     }
 
@@ -274,8 +267,7 @@ impl GleanMCPInspector {
             "params": {}
         });
 
-        let request_body =
-            serde_json::to_string(&list_request).map_err(|e| GleanMcpError::Json(e))?;
+        let request_body = serde_json::to_string(&list_request).map_err(GleanMcpError::Json)?;
 
         // Prepare curl command for MCP list tools call
         let mut curl_args = vec![
@@ -295,7 +287,7 @@ impl GleanMCPInspector {
         // Add auth header if token is available
         let auth_header;
         if let Some(ref token) = self.auth_token {
-            auth_header = format!("Authorization: Bearer {}", token);
+            auth_header = format!("Authorization: Bearer {token}");
             curl_args.extend_from_slice(&["-H", &auth_header]);
             println!("🔐 Using authentication token for tool listing");
         } else {
@@ -310,7 +302,7 @@ impl GleanMCPInspector {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {e}")))?;
 
         let stdout = child
             .stdout
@@ -345,88 +337,83 @@ impl GleanMCPInspector {
 
         let (stdout_lines, stderr_lines) = smol::future::zip(stdout_future, stderr_future).await;
         let stdout_lines = stdout_lines
-            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stdout: {e}")))?;
         let stderr_lines = stderr_lines
-            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to read stderr: {e}")))?;
 
         let status = child
             .status()
             .await
-            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {e}")))?;
 
         if !status.success() {
             let error_output = stderr_lines.join("\n");
             println!("❌ MCP Inspector failed to list tools!");
-            println!("Error output: {}", error_output);
+            println!("Error output: {error_output}");
             return Ok(InspectorResult::new_error(format!(
-                "MCP Inspector tool listing failed: {}",
-                error_output
+                "MCP Inspector tool listing failed: {error_output}"
             )));
         }
 
         let stdout_content = stdout_lines.join("\n");
-        println!("📥 MCP Inspector response: {}", stdout_content);
+        println!("📥 MCP Inspector response: {stdout_content}");
 
         // Try to parse the response - MCP Inspector may return different formats
-        match serde_json::from_str::<serde_json::Value>(&stdout_content) {
-            Ok(response_json) => {
-                // Try to extract tools from various possible response structures
-                let tools = if let Some(result) = response_json.get("result") {
-                    result.get("tools")
-                } else if let Some(tools) = response_json.get("tools") {
-                    Some(tools)
-                } else {
-                    // If response itself is an array, use it as tools
-                    response_json.as_array().map(|_| &response_json)
-                };
+        if let Ok(response_json) = serde_json::from_str::<serde_json::Value>(&stdout_content) {
+            // Try to extract tools from various possible response structures
+            let tools = response_json.get("result").map_or_else(
+                || {
+                    if let Some(tools) = response_json.get("tools") {
+                        Some(tools)
+                    } else {
+                        // If response itself is an array, use it as tools
+                        response_json.as_array().map(|_| &response_json)
+                    }
+                },
+                |result| result.get("tools"),
+            );
 
-                if let Some(tools_value) = tools {
-                    println!("✅ Available tools discovered:");
-                    if let Some(tools_array) = tools_value.as_array() {
-                        for tool in tools_array {
-                            if let Some(name) = tool.get("name") {
-                                println!("  • {}", name);
-                                if let Some(description) = tool.get("description") {
-                                    println!("    {}", description);
-                                }
+            if let Some(tools_value) = tools {
+                println!("✅ Available tools discovered:");
+                if let Some(tools_array) = tools_value.as_array() {
+                    for tool in tools_array {
+                        if let Some(name) = tool.get("name") {
+                            println!("  • {name}");
+                            if let Some(description) = tool.get("description") {
+                                println!("    {description}");
                             }
                         }
                     }
-
-                    let mut tool_results = std::collections::HashMap::new();
-                    tool_results.insert("tools_listed".to_string(), true);
-                    Ok(InspectorResult::new_success(tool_results, response_json))
-                } else {
-                    println!("⚠️  Tools listed but in unexpected format");
-                    let mut tool_results = std::collections::HashMap::new();
-                    tool_results.insert("tools_listed".to_string(), true);
-                    Ok(InspectorResult::new_success(tool_results, response_json))
                 }
+            } else {
+                println!("⚠️  Tools listed but in unexpected format");
             }
-            Err(_) => {
-                // If not JSON, MCP Inspector may have output plain text
-                println!("✅ Tools listed (text format):");
-                println!("📄 Response: {}", stdout_content);
 
-                // Check if it looks like an error
-                if stdout_content.contains("error") || stdout_content.contains("Failed") {
-                    return Ok(InspectorResult::new_error(format!(
-                        "Tool listing error: {}",
-                        stdout_content
-                    )));
-                }
+            let mut tool_results = std::collections::HashMap::new();
+            tool_results.insert("tools_listed".to_string(), true);
+            Ok(InspectorResult::new_success(tool_results, response_json))
+        } else {
+            // If not JSON, MCP Inspector may have output plain text
+            println!("✅ Tools listed (text format):");
+            println!("📄 Response: {stdout_content}");
 
-                let mut tool_results = std::collections::HashMap::new();
-                tool_results.insert("tools_listed".to_string(), true);
-
-                let response_value = serde_json::json!({
-                    "tools_response": stdout_content,
-                    "success": true,
-                    "source": "mcp_inspector"
-                });
-
-                Ok(InspectorResult::new_success(tool_results, response_value))
+            // Check if it looks like an error
+            if stdout_content.contains("error") || stdout_content.contains("Failed") {
+                return Ok(InspectorResult::new_error(format!(
+                    "Tool listing error: {stdout_content}"
+                )));
             }
+
+            let mut tool_results = std::collections::HashMap::new();
+            tool_results.insert("tools_listed".to_string(), true);
+
+            let response_value = serde_json::json!({
+                "tools_response": stdout_content,
+                "success": true,
+                "source": "mcp_inspector"
+            });
+
+            Ok(InspectorResult::new_success(tool_results, response_value))
         }
     }
 
@@ -434,7 +421,7 @@ impl GleanMCPInspector {
     async fn test_basic_connectivity(&self) -> Result<InspectorResult> {
         println!("🔗 Testing basic connectivity to Glean MCP server...");
 
-        // Use curl to test the SSE endpoint with a timeout
+        // Use curl to test the HTTP endpoint with a timeout
         // Include auth header if token is available, otherwise expect 401 Unauthorized
         let mut curl_args = vec![
             "-s", // Silent
@@ -443,7 +430,7 @@ impl GleanMCPInspector {
             "--max-time",
             "10", // 10 second timeout
             "-H",
-            "Accept: text/event-stream", // SSE header
+            "Accept: application/json", // JSON content type
             "-H",
             "User-Agent: glean-mcp-test/0.1.0", // Identify ourselves
         ];
@@ -451,7 +438,7 @@ impl GleanMCPInspector {
         // Add authorization header if token is available
         let auth_header;
         if let Some(ref token) = self.auth_token {
-            auth_header = format!("Authorization: Bearer {}", token);
+            auth_header = format!("Authorization: Bearer {token}");
             curl_args.extend_from_slice(&["-H", &auth_header]);
             println!("🔐 Using authentication token for request");
         } else {
@@ -465,7 +452,7 @@ impl GleanMCPInspector {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to spawn curl: {e}")))?;
 
         let stdout = child
             .stdout
@@ -499,13 +486,13 @@ impl GleanMCPInspector {
         };
 
         let (stdout_result, stderr_result) = smol::future::zip(stdout_future, stderr_future).await;
-        let stdout_lines = stdout_result.map_err(|e| GleanMcpError::Io(e))?;
-        let stderr_lines = stderr_result.map_err(|e| GleanMcpError::Io(e))?;
+        let stdout_lines = stdout_result.map_err(GleanMcpError::Io)?;
+        let stderr_lines = stderr_result.map_err(GleanMcpError::Io)?;
 
         let status = child
             .status()
             .await
-            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {}", e)))?;
+            .map_err(|e| GleanMcpError::Process(format!("Failed to get process status: {e}")))?;
 
         let response = stdout_lines.join("\n");
         let error_output = stderr_lines.join("\n");
@@ -553,31 +540,28 @@ impl GleanMCPInspector {
                     ));
                 }
                 (code, Some(_)) => {
-                    println!("⚠️  Server responded with HTTP {} (authenticated)", code);
+                    println!("⚠️  Server responded with HTTP {code} (authenticated)");
                     if !status.success() {
-                        println!("❌ Request failed: {}", error_output);
+                        println!("❌ Request failed: {error_output}");
                         return Ok(InspectorResult::new_error(format!(
-                            "HTTP {}: {}",
-                            code, error_output
+                            "HTTP {code}: {error_output}"
                         )));
                     }
                 }
                 (code, None) => {
-                    println!("⚠️  Server responded with HTTP {} (unauthenticated)", code);
+                    println!("⚠️  Server responded with HTTP {code} (unauthenticated)");
                     if !status.success() {
-                        println!("❌ Request failed: {}", error_output);
+                        println!("❌ Request failed: {error_output}");
                         return Ok(InspectorResult::new_error(format!(
-                            "HTTP {}: {}",
-                            code, error_output
+                            "HTTP {code}: {error_output}"
                         )));
                     }
                 }
             }
         } else if !status.success() {
-            println!("❌ Server connection failed: {}", error_output);
+            println!("❌ Server connection failed: {error_output}");
             return Ok(InspectorResult::new_error(format!(
-                "Connection failed: {}",
-                error_output
+                "Connection failed: {error_output}"
             )));
         }
 
@@ -598,11 +582,11 @@ impl GleanMCPInspector {
             && (response.lines().last() == Some("200") || response.lines().last() == Some("202"));
 
         for tool_name in &expected_tools {
-            tool_validation.insert(tool_name.to_string(), true);
+            tool_validation.insert((*tool_name).to_string(), true);
             if is_authenticated {
-                println!("✅ Tool available (authenticated): {}", tool_name);
+                println!("✅ Tool available (authenticated): {tool_name}");
             } else {
-                println!("✅ Tool assumed available (unauthenticated): {}", tool_name);
+                println!("✅ Tool assumed available (unauthenticated): {tool_name}");
             }
         }
 
@@ -628,7 +612,8 @@ impl GleanMCPInspector {
 
     /// Validate that Glean-specific tools are present and correctly configured
     /// (This method will be used when we implement full MCP protocol parsing)
-    pub fn validate_glean_tools(&self, inspector_data: Value) -> InspectorResult {
+    #[must_use]
+    pub fn validate_glean_tools(inspector_data: Value) -> InspectorResult {
         let expected_tools = vec!["glean_search", "chat", "read_document"];
         let empty_vec = vec![];
         let available_tools = inspector_data
@@ -638,20 +623,20 @@ impl GleanMCPInspector {
 
         let mut tool_validation = HashMap::new();
         for tool_name in &expected_tools {
-            let found = self.validate_tool_schema(tool_name, available_tools);
-            tool_validation.insert(tool_name.to_string(), found);
+            let found = Self::validate_tool_schema(tool_name, available_tools);
+            tool_validation.insert((*tool_name).to_string(), found);
 
             if found {
-                println!("✅ Validated tool: {}", tool_name);
+                println!("✅ Validated tool: {tool_name}");
             } else {
-                println!("❌ Missing tool: {}", tool_name);
+                println!("❌ Missing tool: {tool_name}");
             }
         }
 
         let success_count = tool_validation.values().filter(|&&v| v).count();
         let success_rate = success_count as f64 / expected_tools.len() as f64;
 
-        if success_rate == 1.0 {
+        if (success_rate - 1.0).abs() < f64::EPSILON {
             println!("🎉 All Glean MCP tools validated successfully!");
             InspectorResult::new_success(tool_validation, inspector_data)
         } else {
@@ -660,7 +645,7 @@ impl GleanMCPInspector {
                 success_count,
                 expected_tools.len()
             );
-            println!("⚠️  {}", error_msg);
+            println!("⚠️  {error_msg}");
             let mut result = InspectorResult::new_success(tool_validation, inspector_data);
             result.success = false;
             result.error = Some(error_msg);
@@ -668,12 +653,10 @@ impl GleanMCPInspector {
         }
     }
 
-    fn validate_tool_schema(&self, tool_name: &str, available_tools: &[Value]) -> bool {
-        available_tools.iter().any(|tool| {
-            tool.get("name")
-                .and_then(|name| name.as_str())
-                .map_or(false, |name| name == tool_name)
-        })
+    fn validate_tool_schema(tool_name: &str, available_tools: &[Value]) -> bool {
+        available_tools
+            .iter()
+            .any(|tool| tool.get("name").and_then(|name| name.as_str()) == Some(tool_name))
     }
 }
 
