@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use console::{Emoji, Term, style};
 use glean_mcp_test::{
     GleanConfig, GleanMcpError, HostController, HostOperationResult, Result,
-    claude_code::ClaudeCodeController, run_list_tools, run_test_all, run_tool_test, run_validation,
+    claude_code::ClaudeCodeController, run_list_tools, run_test_all, run_validation,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
@@ -57,25 +57,6 @@ enum Commands {
         /// Glean instance name (default: scio-prod)
         #[arg(short, long, default_value = "scio-prod")]
         instance: String,
-    },
-
-    /// Test a specific MCP tool with a query
-    TestTool {
-        /// Tool name (search, chat, `read_document`, etc.)
-        #[arg(short, long)]
-        tool: String,
-
-        /// Query to send to the tool
-        #[arg(short, long)]
-        query: String,
-
-        /// Glean instance name (default: scio-prod)
-        #[arg(short, long, default_value = "scio-prod")]
-        instance: String,
-
-        /// Output format (text, json)
-        #[arg(short, long, default_value = "text")]
-        format: String,
     },
 
     /// List available tools from the MCP server
@@ -152,23 +133,19 @@ enum Commands {
         format: String,
     },
 
-    /// Test all available MCP tools and report status
-    TestAll {
+    /// Test MCP tools and report status
+    Test {
         /// Glean instance name (default: glean-dev)
         #[arg(short, long, default_value = "glean-dev")]
         instance: String,
 
-        /// Output format (text, json, summary)
-        #[arg(short, long, default_value = "text")]
-        format: String,
+        /// Test all tools including ChatGPT-specific tools
+        #[arg(long)]
+        all: bool,
 
-        /// Tools to test (comma-separated list, or 'core'/'enterprise'/'all')
-        #[arg(short, long, default_value = "all")]
-        tools: String,
-
-        /// Test scenario (quick, comprehensive, custom)
-        #[arg(short, long, default_value = "quick")]
-        scenario: String,
+        /// Comma-separated list of specific tools to test (mutually exclusive with --all)
+        #[arg(short, long)]
+        tools: Option<String>,
 
         /// Enable parallel testing
         #[arg(short, long)]
@@ -198,7 +175,7 @@ enum Commands {
         #[arg(long, default_value = "5")]
         retry_backoff: u64,
 
-        /// Output results as JSON (shortcut for --format json)
+        /// Output results as JSON (default: text)
         #[arg(long)]
         json: bool,
 
@@ -533,69 +510,6 @@ async fn handle_command(command: Commands) -> Result<()> {
             }
         }
 
-        Commands::TestTool {
-            tool,
-            query,
-            instance,
-            format,
-        } => {
-            let term = Term::stdout();
-            let _ = term.write_line(&format!(
-                "🔧 Testing MCP tool: {} with query: \"{}\"",
-                style(&tool).cyan().bold(),
-                style(&query).dim()
-            ));
-            let _ = term.write_line(&format!("📋 Instance: {}", style(&instance).cyan()));
-
-            match run_tool_test(&tool, &query, Some(&instance), &format) {
-                Ok(result) => {
-                    if result.success {
-                        if format == "json" {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&result)
-                                    .unwrap_or_else(|_| "{}".to_string())
-                            );
-                        } else {
-                            let _ = term.write_line("");
-                            let _ = term.write_line(&format!(
-                                "{}{}",
-                                PARTY,
-                                style("Tool test completed successfully!").green().bold()
-                            ));
-                            if let Some(response_data) = &result.inspector_data {
-                                let _ =
-                                    term.write_line(&format!("📄 {}:", style("Response").bold()));
-                                let response_json = serde_json::to_string_pretty(response_data)
-                                    .unwrap_or_else(|_| "No response data".to_string());
-                                let _ = term.write_line(&response_json);
-                            }
-                        }
-                        std::process::exit(0);
-                    } else {
-                        let _ = term.write_line(&format!(
-                            "{}{}",
-                            CROSS_MARK,
-                            style("Tool test failed!").red().bold()
-                        ));
-                        if let Some(error) = &result.error {
-                            let _ = term.write_line(&format!("Error: {}", style(error).red()));
-                        }
-                        std::process::exit(1);
-                    }
-                }
-                Err(e) => {
-                    let term = Term::stderr();
-                    let _ = term.write_line(&format!(
-                        "{}{}",
-                        CROSS_MARK,
-                        style(format!("Failed to run tool test: {e}")).red()
-                    ));
-                    std::process::exit(1);
-                }
-            }
-        }
-
         Commands::ListTools { instance, format } => {
             let term = Term::stdout();
             let _ = term.write_line(&format!(
@@ -857,11 +771,10 @@ async fn handle_command(command: Commands) -> Result<()> {
             }
         }
 
-        Commands::TestAll {
+        Commands::Test {
             instance,
-            format,
+            all,
             tools,
-            scenario,
             parallel,
             max_concurrent,
             timeout,
@@ -872,8 +785,12 @@ async fn handle_command(command: Commands) -> Result<()> {
             json,
             output,
         } => {
-            // Determine the actual format to use (--json flag overrides --format)
-            let actual_format = if json { "json".to_string() } else { format };
+            // Determine the actual format to use (--json flag enables JSON, otherwise text)
+            let actual_format = if json {
+                "json".to_string()
+            } else {
+                "text".to_string()
+            };
 
             let term = Term::stdout();
 
@@ -887,10 +804,18 @@ async fn handle_command(command: Commands) -> Result<()> {
                 ));
 
                 // Configuration summary - clean and compact
+                let tools_display = if all {
+                    "all (including ChatGPT)".to_string()
+                } else if let Some(ref tools_list) = tools {
+                    tools_list.clone()
+                } else {
+                    "core".to_string()
+                };
+
                 let _ = term.write_line(&format!(
                     "📋 {} | 🔧 {} | ⚡ {} {}",
                     style(&instance).cyan(),
-                    style(&tools).cyan(),
+                    style(&tools_display).cyan(),
                     if parallel { "Parallel" } else { "Sequential" },
                     if parallel {
                         format!("({})", style(max_concurrent.to_string()).dim())
@@ -902,9 +827,28 @@ async fn handle_command(command: Commands) -> Result<()> {
                 let _ = term.write_line("");
             }
 
+            // Determine tools to test - validate mutually exclusive flags
+            if all && tools.is_some() {
+                let _ = term.write_line(&format!(
+                    "{}{}",
+                    CROSS_MARK,
+                    style("Error: --all and --tools are mutually exclusive")
+                        .red()
+                        .bold()
+                ));
+                std::process::exit(1);
+            }
+
+            let tools_filter = if all {
+                "all".to_string()
+            } else if let Some(tools_list) = tools {
+                tools_list
+            } else {
+                "core".to_string()
+            };
+
             let test_options = glean_mcp_test::TestAllOptions {
-                tools_filter: tools,
-                scenario,
+                tools_filter,
                 parallel,
                 max_concurrent,
                 timeout,
@@ -912,66 +856,74 @@ async fn handle_command(command: Commands) -> Result<()> {
                 debug,
                 retry_attempts,
                 retry_backoff_seconds: retry_backoff,
-                format: actual_format.clone(),
             };
 
-            match run_test_all(Some(&instance), &test_options) {
-                Ok(result) => {
-                    let output_content = result.format_output(&actual_format, verbose, debug);
+            // Always test both endpoints when using --all or test according to tools filter
+            let result = if all {
+                // Test both endpoints (default and ChatGPT)
+                if actual_format != "json" {
+                    let _ = term.write_line(&format!(
+                        "🌐 {}",
+                        style("Testing both default and ChatGPT MCP endpoints")
+                            .cyan()
+                            .bold()
+                    ));
+                }
+                run_test_all(Some(&instance), &test_options)?
+            } else {
+                // Test tools according to filter (core tools by default)
+                if actual_format != "json" {
+                    let _ = term
+                        .write_line(&format!("🔧 {}", style("Testing MCP tools").cyan().bold()));
+                }
+                run_test_all(Some(&instance), &test_options)?
+            };
 
-                    if let Some(output_file) = output {
-                        match std::fs::write(&output_file, &output_content) {
-                            Ok(()) => {
-                                let _ = term.write_line(&format!(
-                                    "📄 Results written to: {}",
-                                    style(&output_file).cyan()
-                                ));
-                            }
-                            Err(e) => {
-                                let _ = term.write_line(&format!(
-                                    "{}{}",
-                                    CROSS_MARK,
-                                    style(format!("Failed to write output file: {e}")).red()
-                                ));
-                                std::process::exit(1);
-                            }
-                        }
-                    } else if actual_format == "json" {
-                        // For JSON output, print directly without styling
-                        println!("{output_content}");
-                    } else {
-                        // For text output, use console
-                        let _ = term.write_line(&output_content);
+            let output_content = result.format_output(&actual_format, verbose, debug);
+
+            if let Some(output_file) = output {
+                match std::fs::write(&output_file, &output_content) {
+                    Ok(()) => {
+                        let _ = term.write_line(&format!(
+                            "📄 Results written to: {}",
+                            style(&output_file).cyan()
+                        ));
                     }
-
-                    if result.success {
-                        if actual_format != "json" {
-                            let _ = term.write_line(&format!(
-                                "\n{}{}",
-                                PARTY,
-                                style("All tests completed successfully!").green().bold()
-                            ));
-                        }
-                        std::process::exit(0);
-                    } else {
-                        if actual_format != "json" {
-                            let _ = term.write_line(&format!(
-                                "\n{}{}",
-                                CROSS_MARK,
-                                style("Some tools failed testing!").red().bold()
-                            ));
-                        }
+                    Err(e) => {
+                        let _ = term.write_line(&format!(
+                            "{}{}",
+                            CROSS_MARK,
+                            style(format!("Failed to write output file: {e}")).red()
+                        ));
                         std::process::exit(1);
                     }
                 }
-                Err(e) => {
+            } else if actual_format == "json" {
+                // For JSON output, print directly without styling
+                println!("{output_content}");
+            } else {
+                // For text output, use console
+                let _ = term.write_line(&output_content);
+            }
+
+            if result.success {
+                if actual_format != "json" {
                     let _ = term.write_line(&format!(
-                        "{}{}",
-                        CROSS_MARK,
-                        style(format!("Failed to run test-all: {e}")).red()
+                        "\n{}{}",
+                        PARTY,
+                        style("All tests completed successfully!").green().bold()
                     ));
-                    std::process::exit(1);
                 }
+                std::process::exit(0);
+            } else {
+                if actual_format != "json" {
+                    let _ = term.write_line(&format!(
+                        "\n{}{}",
+                        CROSS_MARK,
+                        style("Some tools failed testing!").red().bold()
+                    ));
+                }
+                std::process::exit(1);
             }
         }
     }

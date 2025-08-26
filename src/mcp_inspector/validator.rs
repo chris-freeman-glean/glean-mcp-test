@@ -68,13 +68,11 @@ impl InspectorResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestAllOptions {
     pub tools_filter: String,
-    pub scenario: String,
     pub parallel: bool,
     pub max_concurrent: usize,
     pub timeout: u64,
     pub verbose: bool,
     pub debug: bool,
-    pub format: String,
     pub retry_attempts: u32,
     pub retry_backoff_seconds: u64,
 }
@@ -374,6 +372,7 @@ impl TestQueryGenerator {
 
 pub struct GleanMCPInspector {
     server_url: String,
+    chatgpt_url: String,
     auth_token: Option<String>,
 }
 
@@ -400,6 +399,7 @@ impl GleanMCPInspector {
 
         Self {
             server_url: format!("https://{instance_name}-be.glean.com/mcp/default"),
+            chatgpt_url: format!("https://{instance_name}-be.glean.com/mcp/chatgpt"),
             auth_token,
         }
     }
@@ -408,6 +408,85 @@ impl GleanMCPInspector {
     #[allow(clippy::future_not_send)]
     #[allow(clippy::cast_possible_truncation)]
     pub async fn test_all_tools(&self, options: &TestAllOptions) -> Result<AllToolsTestResult> {
+        self.test_both_endpoints(options).await
+    }
+
+    /// Test all available MCP tools on both default and ChatGPT endpoints
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_possible_truncation)]
+    pub async fn test_both_endpoints(
+        &self,
+        options: &TestAllOptions,
+    ) -> Result<AllToolsTestResult> {
+        let start_time = Instant::now();
+        let start_time_str = chrono::Utc::now().to_rfc3339();
+
+        // Test default endpoint first
+        let default_result = self
+            .test_tools_on_endpoint(&self.server_url, options)
+            .await?;
+
+        // Test ChatGPT endpoint
+        let chatgpt_result = self
+            .test_tools_on_endpoint(&self.chatgpt_url, options)
+            .await?;
+
+        // Combine results
+        let mut combined_tool_results = HashMap::new();
+
+        // Add default endpoint results with "(default)" suffix
+        for (tool_name, result) in &default_result.tool_results {
+            let mut combined_result = result.clone();
+            combined_result.tool_name = format!("{} (default)", tool_name);
+            combined_tool_results.insert(combined_result.tool_name.clone(), combined_result);
+        }
+
+        // Add ChatGPT endpoint results with "(chatgpt)" suffix
+        for (tool_name, result) in &chatgpt_result.tool_results {
+            let mut combined_result = result.clone();
+            combined_result.tool_name = format!("{} (chatgpt)", tool_name);
+            combined_tool_results.insert(combined_result.tool_name.clone(), combined_result);
+        }
+
+        let total_tools = combined_tool_results.len();
+        let successful_tools = combined_tool_results.values().filter(|r| r.success).count();
+        let success = successful_tools == total_tools;
+
+        let execution_summary = ExecutionSummary {
+            start_time: start_time_str,
+            end_time: chrono::Utc::now().to_rfc3339(),
+            total_duration_ms: start_time.elapsed().as_millis() as u64,
+            parallel_execution: options.parallel,
+            timeout_settings: options.timeout,
+        };
+
+        Ok(AllToolsTestResult {
+            success,
+            total_tools,
+            successful_tools,
+            failed_tools: total_tools - successful_tools,
+            tool_results: combined_tool_results,
+            execution_summary,
+            error: None,
+        })
+    }
+
+    /// Test all available MCP tools on the ChatGPT-specific endpoint
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_possible_truncation)]
+    pub async fn test_chatgpt_tools(&self, options: &TestAllOptions) -> Result<AllToolsTestResult> {
+        self.test_tools_on_endpoint(&self.chatgpt_url, options)
+            .await
+    }
+
+    /// Test all available MCP tools on a specific endpoint
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_possible_truncation)]
+    async fn test_tools_on_endpoint(
+        &self,
+        endpoint_url: &str,
+        options: &TestAllOptions,
+    ) -> Result<AllToolsTestResult> {
         let start_time = Instant::now();
         let start_time_str = chrono::Utc::now().to_rfc3339();
 
@@ -421,7 +500,9 @@ impl GleanMCPInspector {
         spinner.enable_steady_tick(Duration::from_millis(100));
         spinner.set_message("Discovering available tools...");
 
-        let tools_result = self.list_available_tools(false).await?; // Force quiet mode
+        let tools_result = self
+            .list_available_tools_from_endpoint(endpoint_url, false)
+            .await?; // Force quiet mode
         let available_tools = Self::extract_tools_from_result(&tools_result);
         let tools_to_test = Self::filter_tools(&available_tools, options);
 
@@ -447,13 +528,18 @@ impl GleanMCPInspector {
 
         // Phase 2: Execute tests with individual progress bars
         let test_results = if options.parallel {
-            self.execute_tests_parallel_with_individual_progress(&tools_to_test, options)
-                .await?
+            self.execute_tests_parallel_with_individual_progress(
+                &tools_to_test,
+                options,
+                endpoint_url,
+            )
+            .await?
         } else {
             self.execute_tests_sequential_with_progress(
                 &tools_to_test,
                 options,
                 &MultiProgress::new(),
+                endpoint_url,
             )
             .await?
         };
@@ -624,6 +710,7 @@ impl GleanMCPInspector {
         &self,
         tools: &[ToolInfo],
         options: &TestAllOptions,
+        endpoint_url: &str,
     ) -> Result<Vec<ToolTestResult>> {
         use smol::lock::Semaphore;
 
@@ -659,7 +746,7 @@ impl GleanMCPInspector {
             let semaphore = semaphore.clone();
             let timeout = Duration::from_secs(options.timeout);
             let query = TestQueryGenerator::generate_test_query(&tool.name);
-            let server_url = self.server_url.clone();
+            let server_url = endpoint_url.to_string();
             let auth_token = self.auth_token.clone();
             let retry_attempts = options.retry_attempts;
             let retry_backoff_seconds = options.retry_backoff_seconds;
@@ -909,6 +996,7 @@ impl GleanMCPInspector {
         tools: &[ToolInfo],
         options: &TestAllOptions,
         multi_progress: &MultiProgress,
+        endpoint_url: &str,
     ) -> Result<Vec<ToolTestResult>> {
         let mut results = Vec::new();
         let timeout = Duration::from_secs(options.timeout);
@@ -931,7 +1019,7 @@ impl GleanMCPInspector {
 
             let start_time = Instant::now();
             let result = Self::test_tool_with_retry(
-                self.server_url.clone(),
+                endpoint_url.to_string(),
                 self.auth_token.clone(),
                 &tool.name,
                 &query,
@@ -1524,6 +1612,16 @@ impl GleanMCPInspector {
 
     /// List available tools from the MCP server using direct HTTP calls (quiet mode for `MultiProgress`)
     pub async fn list_available_tools(&self, debug: bool) -> Result<InspectorResult> {
+        self.list_available_tools_from_endpoint(&self.server_url, debug)
+            .await
+    }
+
+    /// List available tools from a specific endpoint
+    pub async fn list_available_tools_from_endpoint(
+        &self,
+        endpoint_url: &str,
+        debug: bool,
+    ) -> Result<InspectorResult> {
         // This function runs in quiet mode - no direct terminal output
 
         // Create MCP JSON-RPC request to list tools
@@ -1559,7 +1657,7 @@ impl GleanMCPInspector {
             // Debug output removed
         }
 
-        curl_args.push(&self.server_url);
+        curl_args.push(endpoint_url);
 
         // Execute curl command
         let mut child = Command::new("curl")
@@ -1947,19 +2045,6 @@ pub fn run_validation(instance_name: Option<&str>) -> Result<InspectorResult> {
     })
 }
 
-/// Run a specific MCP tool test using MCP Inspector
-pub fn run_tool_test(
-    tool_name: &str,
-    query: &str,
-    instance_name: Option<&str>,
-    _format: &str,
-) -> Result<InspectorResult> {
-    smol::block_on(async {
-        let inspector = GleanMCPInspector::new(instance_name);
-        inspector.test_tool_with_inspector(tool_name, query).await
-    })
-}
-
 /// List available tools from the MCP server
 pub fn run_list_tools(instance_name: Option<&str>, _format: &str) -> Result<InspectorResult> {
     smol::block_on(async {
@@ -1976,5 +2061,16 @@ pub fn run_test_all(
     smol::block_on(async {
         let inspector = GleanMCPInspector::new(instance_name);
         inspector.test_all_tools(options).await
+    })
+}
+
+/// Run comprehensive testing of all available MCP tools on ChatGPT-specific endpoint
+pub fn run_test_chatgpt(
+    instance_name: Option<&str>,
+    options: &TestAllOptions,
+) -> Result<AllToolsTestResult> {
+    smol::block_on(async {
+        let inspector = GleanMCPInspector::new(instance_name);
+        inspector.test_chatgpt_tools(options).await
     })
 }

@@ -44,9 +44,8 @@ GLEAN_AUTH_TOKEN=your_token_here glean-mcp-test test-all --instance scio-prod
 **How to get your token:**
 
 1. Go to your Glean instance (e.g., https://scio-prod.glean.com)
-2. Click on the secret Glean debug menu
-3. Create a new "Glean MCP" token
-4. Copy the token and set it as the `GLEAN_AUTH_TOKEN` environment variable
+2. Click on the secret Glean debug menu 3. Create a new "Glean MCP" token
+3. Copy the token and set it as the `GLEAN_AUTH_TOKEN` environment variable
 
 **Note:** The token must be valid for the instance you're testing (e.g., scio-prod token for scio-prod instance).
 
@@ -81,41 +80,42 @@ GLEAN_AUTH_TOKEN=your_token_here glean-mcp-test test-all --instance scio-prod
    cargo run -- auth --instance scio-prod
    ```
 
-4. **Test all tools** (main feature):
+4. **Test tools** (main feature):
 
    ```bash
-   # Test all available tools with parallel execution
-   cargo run -- test-all --instance scio-prod --parallel
+   # Test all available tools (including ChatGPT endpoint)
+   cargo run -- test --instance scio-prod --all
 
-   # Quick core tools test
-   cargo run -- test-all --instance scio-prod --tools core --format summary
+   # Quick core tools test (default behavior)
+   cargo run -- test --instance scio-prod
    ```
 
 ## Commands
 
-### 🧪 Main Command: `test-all`
+### 🧪 Main Command: `test`
 
-**Test all available MCP tools with comprehensive reporting:**
+**Test MCP tools with comprehensive reporting:**
 
 ```bash
 # If installed via cargo install:
-glean-mcp-test test-all --instance scio-prod
+glean-mcp-test test --instance scio-prod
 
 # If building from source:
-cargo run -- test-all --instance scio-prod
+cargo run -- test --instance scio-prod
 
-# Test specific tool categories
-glean-mcp-test test-all --instance scio-prod --tools core
-glean-mcp-test test-all --instance scio-prod --tools enterprise
-glean-mcp-test test-all --instance scio-prod --tools search,chat
+# Test all tools (including ChatGPT endpoint)
+glean-mcp-test test --instance scio-prod --all
+
+# Test specific tools
+glean-mcp-test test --instance scio-prod --tools search,chat
+glean-mcp-test test --instance scio-prod --tools core
 
 # Performance and output options
-glean-mcp-test test-all --instance scio-prod --parallel --timeout 60
-glean-mcp-test test-all --instance scio-prod --json --output results.json
-glean-mcp-test test-all --instance scio-prod --format summary
+glean-mcp-test test --instance scio-prod --parallel --timeout 60
+glean-mcp-test test --instance scio-prod --json --output results.json
 
 # Advanced options
-glean-mcp-test test-all --instance scio-prod --parallel --max-concurrent 5 --verbose
+glean-mcp-test test --instance scio-prod --parallel --max-concurrent 5 --verbose
 ```
 
 ### 🔧 Utility Commands
@@ -130,8 +130,8 @@ glean-mcp-test inspect --instance scio-prod    # Validate MCP server connection
 glean-mcp-test list-tools --instance scio-prod # List available tools
 
 # Individual tool testing
-glean-mcp-test test-tool -t search -q "remote work policy" --instance scio-prod
-glean-mcp-test test-tool -t chat -q "What are the main benefits of using Glean?"
+glean-mcp-test test --tools search --instance scio-prod
+glean-mcp-test test --tools chat --instance scio-prod
 
 # Configuration management
 glean-mcp-test config                           # Show configuration
@@ -142,9 +142,8 @@ glean-mcp-test config --verbose                # Show detailed YAML config
 
 All commands support multiple output formats and **return proper exit codes** (0=success, 1=failure):
 
-- **`--format text`** (default): Human-readable with emojis and progress
-- **`--format json`** or **`--json`**: Structured data for programmatic use
-- **`--format summary`**: Concise overview with key metrics
+- **Text** (default): Human-readable with emojis and progress
+- **JSON** (use `--json`): Structured data for programmatic use
 
 ## Configuration
 
@@ -174,9 +173,40 @@ GLEAN_AUTH_TOKEN=your_token_here glean-mcp-test test-all --instance scio-prod
 - Must have appropriate API permissions
 - Can be obtained from Glean Settings → API Tokens
 
-### Available Tools
+### Tool Selection
 
-The framework automatically discovers available tools and categorizes them:
+The framework supports different tool selection modes:
+
+**Core Tools** (default behavior):
+
+```bash
+glean-mcp-test test --instance scio-prod
+# Tests core tools on both endpoints:
+# - https://scio-prod-be.glean.com/mcp/default
+# - https://scio-prod-be.glean.com/mcp/chatgpt
+```
+
+**All Tools** (use `--all` flag):
+
+```bash
+glean-mcp-test test --instance scio-prod --all
+# Tests all available tools on both endpoints
+```
+
+**Specific Tools** (use `--tools` flag):
+
+```bash
+glean-mcp-test test --instance scio-prod --tools search,chat
+# Tests only specified tools
+```
+
+**Key Features:**
+
+- **Default behavior**: Tests core tools on both endpoints for basic validation
+- **All tools**: Complete endpoint coverage including enterprise tools
+- **Specific tools**: Targeted testing for debugging or specific use cases
+
+### Available Tools
 
 #### Core Tools (Always Available)
 
