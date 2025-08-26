@@ -8,6 +8,7 @@ use serde_json::Value;
 use smol::io::{AsyncBufReadExt, BufReader};
 use smol::stream::StreamExt;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -130,6 +131,7 @@ impl AllToolsTestResult {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn format_summary(&self) -> String {
         format!(
             "🧪 Test Summary: {}/{} tools successful ({}%)\n⏱️  Total time: {:.2}s",
@@ -137,13 +139,14 @@ impl AllToolsTestResult {
             self.total_tools,
             if self.total_tools > 0 {
                 (self.successful_tools * 100) / self.total_tools
-            } else {
-                0
-            },
-            self.execution_summary.total_duration_ms as f64 / 1000.0
+             } else {
+                 0
+              },
+             self.execution_summary.total_duration_ms as f64 / 1000.0
         )
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn format_text(&self, verbose: bool, debug: bool) -> String {
         let mut output = String::new();
 
@@ -151,22 +154,24 @@ impl AllToolsTestResult {
         output.push_str("🧪 Glean MCP Tools Test Results\n");
         output.push_str("=".repeat(50).as_str());
         output.push('\n');
-        output.push_str(&format!(
-            "📊 Overall Status: {}\n",
+        let _ = writeln!(
+            output,
+            "📊 Overall Status: {}",
             if self.success {
                 "✅ SUCCESS"
             } else {
                 "❌ FAILED"
             }
-        ));
-        output.push_str(&format!(
-            "🔧 Tools Tested: {}/{} successful\n",
+        );
+        let _ = writeln!(
+            output,
+            "🔧 Tools Tested: {}/{} successful",
             self.successful_tools, self.total_tools
-        ));
+        );
 
         if self.total_tools > 0 {
             let success_rate = (self.successful_tools * 100) / self.total_tools;
-            output.push_str(&format!("📈 Success Rate: {success_rate}%\n"));
+            let _ = writeln!(output, "📈 Success Rate: {success_rate}%");
         }
 
         // Individual tool results
@@ -177,30 +182,31 @@ impl AllToolsTestResult {
         for (tool_name, result) in &self.tool_results {
             let status = if result.success { "✅" } else { "❌" };
             let duration = format!("{:.2}s", result.response_time_ms as f64 / 1000.0);
-            output.push_str(&format!("  {status} {tool_name} ({duration})\n"));
+            let _ = writeln!(output, "  {status} {tool_name} ({duration})");
 
             if verbose {
-                output.push_str(&format!("    Query: \"{}\"\n", result.test_query));
+                let _ = writeln!(output, "    Query: \"{}\"", result.test_query);
                 if !result.success {
                     if let Some(error) = &result.error_message {
-                        output.push_str(&format!("    Error: {error}\n"));
+                        let _ = writeln!(output, "    Error: {error}");
                     }
                 } else if let Some(validation) = &result.validation_details {
-                    output.push_str(&format!("    Validation: {validation}\n"));
+                    let _ = writeln!(output, "    Validation: {validation}");
                 }
 
                 // Show full response data only in debug mode
                 if debug && let Some(response_data) = &result.response_data {
                     let response_str = serde_json::to_string_pretty(response_data)
                         .unwrap_or_else(|_| response_data.to_string());
-                    output.push_str(&format!(
+                    let _ = write!(
+                        output,
                         "    Response Data:\n{}\n",
                         response_str
                             .lines()
                             .map(|line| format!("      {line}"))
                             .collect::<Vec<_>>()
                             .join("\n")
-                    ));
+                    );
                 }
 
                 output.push('\n');
@@ -211,25 +217,28 @@ impl AllToolsTestResult {
         output.push_str("\n⏱️  Execution Summary:\n");
         output.push_str("-".repeat(20).as_str());
         output.push('\n');
-        output.push_str(&format!(
-            "   Total time: {:.2}s\n",
+        let _ = writeln!(
+            output,
+            "   Total time: {:.2}s",
             self.execution_summary.total_duration_ms as f64 / 1000.0
-        ));
-        output.push_str(&format!(
-            "   Parallel: {}\n",
+        );
+        let _ = writeln!(
+            output,
+            "   Parallel: {}",
             if self.execution_summary.parallel_execution {
                 "Yes"
             } else {
                 "No"
             }
-        ));
-        output.push_str(&format!(
-            "   Timeout per tool: {}s\n",
+        );
+        let _ = writeln!(
+            output,
+            "   Timeout per tool: {}s",
             self.execution_summary.timeout_settings
-        ));
+        );
 
         if let Some(error) = &self.error {
-            output.push_str(&format!("\n⚠️  Global Error: {error}\n"));
+            let _ = write!(output, "\n⚠️  Global Error: {error}\n");
         }
 
         // Detailed error section for failed tests (always shown, not just in verbose mode)
@@ -242,25 +251,26 @@ impl AllToolsTestResult {
         if !failed_tools.is_empty() {
             output.push_str("\n🚨 Detailed Error Reports:\n");
             output.push_str("=".repeat(50).as_str());
-            output.push_str("\n");
+                output.push('\n');
 
             for (tool_name, result) in failed_tools {
-                output.push_str(&format!("\n❌ {} - FAILED\n", tool_name));
+                let _ = write!(output, "\n❌ {tool_name} - FAILED\n");
                 output.push_str("-".repeat(30).as_str());
-                output.push_str("\n");
+            output.push('\n');
 
-                output.push_str(&format!("🔍 Test Query: \"{}\"\n", result.test_query));
-                output.push_str(&format!(
-                    "⏱️  Duration: {:.2}s\n",
+                let _ = writeln!(output, "🔍 Test Query: \"{}\"", result.test_query);
+                let _ = writeln!(
+                    output,
+                    "⏱️  Duration: {:.2}s",
                     result.response_time_ms as f64 / 1000.0
-                ));
+                );
 
                 if let Some(error) = &result.error_message {
                     output.push_str("💥 Error Message:\n");
                     // Format error message with proper indentation
                     let error_lines = error.lines().collect::<Vec<_>>();
                     for line in error_lines {
-                        output.push_str(&format!("   {}\n", line));
+                        let _ = writeln!(output, "   {line}");
                     }
                 }
 
@@ -268,7 +278,7 @@ impl AllToolsTestResult {
                     output.push_str("🔬 Validation Details:\n");
                     let validation_lines = validation.lines().collect::<Vec<_>>();
                     for line in validation_lines {
-                        output.push_str(&format!("   {}\n", line));
+                        let _ = writeln!(output, "   {line}");
                     }
                 }
             }
@@ -333,7 +343,7 @@ pub struct TestQueryGenerator;
 
 impl TestQueryGenerator {
     #[must_use]
-    pub fn generate_test_query(&self, tool_name: &str) -> String {
+    pub fn generate_test_query(tool_name: &str) -> String {
         match tool_name {
             "search" => "remote work policy".to_string(),
             "chat" => "What are the main benefits of using Glean?".to_string(),
@@ -352,7 +362,7 @@ impl TestQueryGenerator {
     }
 
     #[must_use]
-    pub fn get_tool_category(&self, tool_name: &str) -> &'static str {
+    pub fn get_tool_category(tool_name: &str) -> &'static str {
         match tool_name {
             "search" | "chat" | "read_document" => "core",
             "code_search" | "employee_search" | "gmail_search" | "outlook_search"
@@ -365,7 +375,6 @@ impl TestQueryGenerator {
 pub struct GleanMCPInspector {
     server_url: String,
     auth_token: Option<String>,
-    query_generator: TestQueryGenerator,
 }
 
 impl GleanMCPInspector {
@@ -392,11 +401,12 @@ impl GleanMCPInspector {
         Self {
             server_url: format!("https://{instance_name}-be.glean.com/mcp/default"),
             auth_token,
-            query_generator: TestQueryGenerator,
         }
     }
 
     /// Test all available MCP tools with clean `MultiProgress` coordination
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_possible_truncation)]
     pub async fn test_all_tools(&self, options: &TestAllOptions) -> Result<AllToolsTestResult> {
         let start_time = Instant::now();
         let start_time_str = chrono::Utc::now().to_rfc3339();
@@ -404,6 +414,7 @@ impl GleanMCPInspector {
         // Clean discovery phase
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(
+            #[allow(clippy::literal_string_with_formatting_args)]
             ProgressStyle::with_template("🔍 {spinner} {msg}")
                 .unwrap_or_else(|_| ProgressStyle::default_spinner()),
         );
@@ -411,8 +422,8 @@ impl GleanMCPInspector {
         spinner.set_message("Discovering available tools...");
 
         let tools_result = self.list_available_tools(false).await?; // Force quiet mode
-        let available_tools = self.extract_tools_from_result(&tools_result)?;
-        let tools_to_test = self.filter_tools(&available_tools, options);
+        let available_tools = Self::extract_tools_from_result(&tools_result);
+        let tools_to_test = Self::filter_tools(&available_tools, options);
 
         spinner.finish_with_message(format!("✅ Found {} tools to test", tools_to_test.len()));
 
@@ -477,7 +488,7 @@ impl GleanMCPInspector {
     }
 
     /// Extract tools from the `list_available_tools` result
-    fn extract_tools_from_result(&self, result: &InspectorResult) -> Result<Vec<ToolInfo>> {
+    fn extract_tools_from_result(result: &InspectorResult) -> Vec<ToolInfo> {
         let mut tools = Vec::new();
 
         if let Some(inspector_data) = &result.inspector_data {
@@ -577,25 +588,21 @@ impl GleanMCPInspector {
             ];
         }
 
-        Ok(tools)
+        tools
     }
 
     /// Filter tools based on the test options
-    fn filter_tools(
-        &self,
-        available_tools: &[ToolInfo],
-        options: &TestAllOptions,
-    ) -> Vec<ToolInfo> {
+    fn filter_tools(available_tools: &[ToolInfo], options: &TestAllOptions) -> Vec<ToolInfo> {
         match options.tools_filter.as_str() {
             "all" => available_tools.to_vec(),
             "core" => available_tools
                 .iter()
-                .filter(|tool| self.query_generator.get_tool_category(&tool.name) == "core")
+                .filter(|tool| TestQueryGenerator::get_tool_category(&tool.name) == "core")
                 .cloned()
                 .collect(),
             "enterprise" => available_tools
                 .iter()
-                .filter(|tool| self.query_generator.get_tool_category(&tool.name) == "enterprise")
+                .filter(|tool| TestQueryGenerator::get_tool_category(&tool.name) == "enterprise")
                 .cloned()
                 .collect(),
             tools_list => {
@@ -610,6 +617,9 @@ impl GleanMCPInspector {
     }
 
     /// Execute tests in parallel with individual progress bars per tool
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
     async fn execute_tests_parallel_with_individual_progress(
         &self,
         tools: &[ToolInfo],
@@ -648,7 +658,7 @@ impl GleanMCPInspector {
         for (tool_pb, tool) in progress_bars {
             let semaphore = semaphore.clone();
             let timeout = Duration::from_secs(options.timeout);
-            let query = self.query_generator.generate_test_query(&tool.name);
+            let query = TestQueryGenerator::generate_test_query(&tool.name);
             let server_url = self.server_url.clone();
             let auth_token = self.auth_token.clone();
             let retry_attempts = options.retry_attempts;
@@ -721,6 +731,9 @@ impl GleanMCPInspector {
     }
 
     /// Execute tests in parallel with clean, single progress bar (legacy)
+    #[allow(dead_code)]
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_possible_truncation)]
     async fn execute_tests_parallel_with_progress(
         &self,
         tools: &[ToolInfo],
@@ -751,7 +764,7 @@ impl GleanMCPInspector {
             let semaphore = semaphore.clone();
             let tool = tool.clone();
             let timeout = Duration::from_secs(options.timeout);
-            let query = self.query_generator.generate_test_query(&tool.name);
+            let query = TestQueryGenerator::generate_test_query(&tool.name);
             let pb_clone = pb.clone();
 
             let server_url = self.server_url.clone();
@@ -811,6 +824,9 @@ impl GleanMCPInspector {
     }
 
     /// Execute tests in parallel with concurrency limits (Legacy method)
+    #[allow(dead_code)]
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_possible_truncation)]
     async fn execute_tests_parallel(
         &self,
         tools: &[ToolInfo],
@@ -825,7 +841,7 @@ impl GleanMCPInspector {
             let semaphore = semaphore.clone();
             let tool = tool.clone();
             let timeout = Duration::from_secs(options.timeout);
-            let query = self.query_generator.generate_test_query(&tool.name);
+            let query = TestQueryGenerator::generate_test_query(&tool.name);
 
             let server_url = self.server_url.clone();
             let auth_token = self.auth_token.clone();
@@ -885,6 +901,9 @@ impl GleanMCPInspector {
     }
 
     /// Execute tests sequentially with progress bar (Phase 2)
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
     async fn execute_tests_sequential_with_progress(
         &self,
         tools: &[ToolInfo],
@@ -906,7 +925,7 @@ impl GleanMCPInspector {
         pb.set_message("Testing tools sequentially...");
 
         for tool in tools {
-            let query = self.query_generator.generate_test_query(&tool.name);
+            let query = TestQueryGenerator::generate_test_query(&tool.name);
 
             pb.set_message(format!("Testing {}", &tool.name));
 
@@ -959,6 +978,10 @@ impl GleanMCPInspector {
     }
 
     /// Execute tests sequentially (Legacy method)
+    #[allow(dead_code)]
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
     async fn execute_tests_sequential(
         &self,
         tools: &[ToolInfo],
@@ -968,7 +991,7 @@ impl GleanMCPInspector {
         let timeout = Duration::from_secs(options.timeout);
 
         for tool in tools {
-            let query = self.query_generator.generate_test_query(&tool.name);
+            let query = TestQueryGenerator::generate_test_query(&tool.name);
             if options.verbose || options.debug {
                 println!("🔧 Testing tool: {} with query: \"{}\"", tool.name, query);
             }
@@ -1052,6 +1075,8 @@ impl GleanMCPInspector {
     }
 
     /// Test a tool with retry logic and exponential backoff
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::cast_possible_truncation)]
     async fn test_tool_with_retry(
         server_url: String,
         auth_token: Option<String>,
@@ -1229,8 +1254,10 @@ impl GleanMCPInspector {
         let stdout_content = stdout_lines.join("\n");
 
         // Try to parse the response as JSON-RPC
+        #[allow(clippy::option_if_let_else)]
         match serde_json::from_str::<Value>(&stdout_content) {
             Ok(response_json) => {
+                #[allow(clippy::option_if_let_else)]
                 if let Some(result) = response_json.get("result") {
                     Ok(result.clone())
                 } else if let Some(error) = response_json.get("error") {
@@ -1852,7 +1879,7 @@ impl GleanMCPInspector {
     /// Validate that Glean-specific tools are present and correctly configured
     /// (This method will be used when we implement full MCP protocol parsing)
     #[must_use]
-    pub fn validate_glean_tools(&self, inspector_data: Value) -> InspectorResult {
+    pub fn validate_glean_tools(inspector_data: Value) -> InspectorResult {
         let expected_tools = vec![
             "search",
             "chat",
