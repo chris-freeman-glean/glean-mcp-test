@@ -139,10 +139,10 @@ impl AllToolsTestResult {
             self.total_tools,
             if self.total_tools > 0 {
                 (self.successful_tools * 100) / self.total_tools
-             } else {
-                 0
-              },
-             self.execution_summary.total_duration_ms as f64 / 1000.0
+            } else {
+                0
+            },
+            self.execution_summary.total_duration_ms as f64 / 1000.0
         )
     }
 
@@ -251,12 +251,12 @@ impl AllToolsTestResult {
         if !failed_tools.is_empty() {
             output.push_str("\n🚨 Detailed Error Reports:\n");
             output.push_str("=".repeat(50).as_str());
-                output.push('\n');
+            output.push('\n');
 
             for (tool_name, result) in failed_tools {
                 let _ = write!(output, "\n❌ {tool_name} - FAILED\n");
                 output.push_str("-".repeat(30).as_str());
-            output.push('\n');
+                output.push('\n');
 
                 let _ = writeln!(output, "🔍 Test Query: \"{}\"", result.test_query);
                 let _ = writeln!(
@@ -1256,7 +1256,8 @@ impl GleanMCPInspector {
         // Try to parse the response as JSON-RPC
         #[allow(clippy::option_if_let_else)]
         match serde_json::from_str::<Value>(&stdout_content) {
-            Ok(response_json) => {
+            Ok(response_json) =>
+            {
                 #[allow(clippy::option_if_let_else)]
                 if let Some(result) = response_json.get("result") {
                     Ok(result.clone())
